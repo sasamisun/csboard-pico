@@ -1,0 +1,27 @@
+{
+    "env": {
+        "IDF_PATH": "C:\\Users\\amiha\\esp\\v5.3.2\\esp-idf",
+        "COMPILER_PATH": "C:\\Users\\amiha\\.espressif\\tools\\xtensa-esp32-elf\\esp-2021r2-patch5-8.4.0\\xtensa-esp32-elf\\bin\\xtensa-esp32-elf-gcc.exe"
+    },
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${workspaceFolder}/components/**",
+                "${IDF_PATH}/components/**"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE"
+            ],
+            "windowsSdkVersion": "10.0.10586.0",
+            "compilerPath": "${COMPILER_PATH}",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "${default}"
+        }
+    ],
+    "version": 4
+}

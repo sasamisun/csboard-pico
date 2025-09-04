@@ -6,8 +6,8 @@ set(COMPONENT_REQUIRES
     log             # ログ出力にゃ
     spi_flash       # フラッシュアクセスにゃ
     nvs_flash       # 不揮発性ストレージにゃ
-    m5unified
-    m5gfx
+    M5Unified
+    M5GFX
 )
 
 # プライベートな要求関係にゃ

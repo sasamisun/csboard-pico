@@ -9,6 +9,8 @@
             "includePath": [
                 "${workspaceFolder}/**",
                 "${workspaceFolder}/components/**",
+                "${config:idf.espIdfPath}/components/**",
+                "${config:idf.espIdfPathWin}/components/**",
                 "${IDF_PATH}/components/**"
             ],
             "defines": [

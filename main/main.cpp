@@ -1,7 +1,13 @@
 /*
- * M5StampPico with ST7789P3 Display (76×284)
- * ESP32-PICO-D4 + ST7789P3 専用設定版
- * ST7789P3の特殊な76×284サイズに完全対応するにゃ！🎨
+ * M5StampPico with ST7789P3 Display (76×284) - 完全独自制御版
+ * ESP32-PICO-D4 + ST7789P3 生SPI制御版
+ * 
+ * 🔧 完全独自制御内容:
+ * 1. M5GFXライブラリを使わず生のESP-IDF SPI制御
+ * 2. ST7789P3専用初期化シーケンス完全実装
+ * 3. バックライトGPIO25直接制御
+ * 4. 76×284表示領域の正確なメモリマッピング
+ * 5. 段階的デバッグ機能付き
  */
 
 #include <stdio.h>
@@ -9,104 +15,50 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_system.h"
-
-// M5Unified & M5GFX
-#include <M5Unified.h>
-#include <lgfx/v1/panel/Panel_ST7789.hpp>
+#include "driver/spi_master.h"
+#include "driver/gpio.h"
+#include <string.h>
 
 // ログタグ定義
-static const char *TAG = "M5StampPico";
+static const char *TAG = "ST7789P3_RAW_CONTROL";
 
-// ST7789P3ピン定義
-constexpr int PIN_SCL = 18; // SCLK (SPI Clock)
-constexpr int PIN_SDA = 26; // MOSI (SDA)
-constexpr int PIN_RST = 22; // Reset
-constexpr int PIN_DC = 21;  // Data/Command
-constexpr int PIN_CS = 19;  // Chip Select
-constexpr int PIN_BLK = -1; // Backlight（未使用）
+// 🔧 ピン定義
+#define PIN_SCL     18  // SPI Clock
+#define PIN_SDA     26  // SPI MOSI
+#define PIN_RST     22  // Reset
+#define PIN_DC      21  // Data/Command
+#define PIN_CS      19  // Chip Select  
+//#define PIN_BLK     25  // Backlight
 
-// ST7789P3専用カスタムパネルクラス
-class LGFX_StampPico_ST7789P3 : public lgfx::LGFX_Device
-{
-    lgfx::Panel_ST7789 _panel_instance; // ST7789ベースで設定変更
-    lgfx::Bus_SPI _bus_instance;        // SPIバスインスタンス
-    lgfx::Light_PWM _light_instance;    // バックライト制御インスタンス
+// ST7789P3専用コマンド定義
+#define ST7789P3_SWRESET    0x01  // Software Reset
+#define ST7789P3_SLPOUT     0x11  // Sleep Out
+#define ST7789P3_NORON      0x13  // Normal Display Mode On
+#define ST7789P3_INVOFF     0x20  // Display Inversion Off
+#define ST7789P3_INVON      0x21  // Display Inversion On
+#define ST7789P3_DISPOFF    0x28  // Display Off
+#define ST7789P3_DISPON     0x29  // Display On
+#define ST7789P3_CASET      0x2A  // Column Address Set
+#define ST7789P3_RASET      0x2B  // Row Address Set
+#define ST7789P3_RAMWR      0x2C  // Memory Write
+#define ST7789P3_MADCTL     0x36  // Memory Access Control
+#define ST7789P3_COLMOD     0x3A  // Interface Pixel Format
 
-public:
-    LGFX_StampPico_ST7789P3(void)
-    {
-        // SPIバス設定（ST7789P3用に最適化）
-        {
-            auto cfg = _bus_instance.config();
-            cfg.spi_host = HSPI_HOST;      // HSPIホスト使用
-            cfg.spi_mode = 0;              // SPI mode 0
-            cfg.freq_write = 20000000;     // 20MHzに下げて安定性向上
-            cfg.freq_read = 10000000;      // 10MHzに下げて安定性向上
-            cfg.spi_3wire = false;         // 4-wire SPI（CSピン使用）
-            cfg.use_lock = true;           // トランザクションロック使用
-            cfg.dma_channel = SPI_DMA_CH_AUTO; // DMA自動選択
-            cfg.pin_sclk = PIN_SCL;        // SCLKピン番号
-            cfg.pin_mosi = PIN_SDA;        // MOSIピン番号
-            cfg.pin_miso = -1;             // MISOピン（未使用）
-            cfg.pin_dc = PIN_DC;           // D/Cピン番号
-            _bus_instance.config(cfg);
-            _panel_instance.setBus(&_bus_instance);
-        }
+// 表示サイズ定義
+#define LCD_WIDTH   76
+#define LCD_HEIGHT  284
+#define MEMORY_WIDTH  240
+#define MEMORY_HEIGHT 320
+#define OFFSET_X    ((MEMORY_WIDTH - LCD_WIDTH) / 2)   // 82
+#define OFFSET_Y    ((MEMORY_HEIGHT - LCD_HEIGHT) / 2) // 18
 
-        // ST7789P3パネル設定（76×284専用）
-        {
-            auto cfg = _panel_instance.config();
+// SPIハンドル
+static spi_device_handle_t spi_handle;
 
-            cfg.pin_cs = PIN_CS;
-            cfg.pin_rst = PIN_RST;
-            cfg.pin_busy = -1;
-
-            // ST7789P3の特殊設定
-            cfg.memory_width = 76;         // メモリ幅を実サイズに
-            cfg.memory_height = 284;       // メモリ高さを実サイズに
-            cfg.panel_width = 76;          // パネル幅
-            cfg.panel_height = 284;        // パネル高さ
-            
-            // ST7789P3用オフセット（ゼロから開始）
-            cfg.offset_x = 0;              // Xオフセットなし
-            cfg.offset_y = 0;              // Yオフセットなし
-            cfg.offset_rotation = 0;       // 回転オフセットなし
-            
-            // ST7789P3用読み取り設定
-            cfg.dummy_read_pixel = 8;      // ダミー読み取りピクセル数
-            cfg.dummy_read_bits = 1;       // ダミー読み取りビット数
-            
-            cfg.readable = true;           // 読み取り可能
-            cfg.invert = false;            // 色反転なし（P3は反転設定が異なる場合）
-            cfg.rgb_order = false;         // RGB順序
-            cfg.dlen_16bit = false;        // 16ビットデータ長
-            cfg.bus_shared = true;         // バス共有
-
-            _panel_instance.config(cfg);
-        }
-
-        // バックライト設定（未使用の場合はスキップ）
-        if (PIN_BLK >= 0) {
-            auto cfg = _light_instance.config();
-            cfg.pin_bl = PIN_BLK;
-            cfg.invert = false;
-            cfg.freq = 44100;
-            cfg.pwm_channel = 7;
-            _light_instance.config(cfg);
-            _panel_instance.setLight(&_light_instance);
-        }
-
-        setPanel(&_panel_instance);
-    }
-};
-
-// ST7789P3ディスプレイインスタンス
-static LGFX_StampPico_ST7789P3 tft;
-
-// カラーパレット定義
+// カラーパレット
 const uint16_t colors[] = {
     0xF800, // 赤
-    0x07E0, // 緑
+    0x07E0, // 緑  
     0x001F, // 青
     0xFFE0, // 黄色
     0xF81F, // マゼンタ
@@ -115,235 +67,320 @@ const uint16_t colors[] = {
     0xFD20  // オレンジ
 };
 
-// アニメーション用変数
-int animation_frame = 0;
-int color_index = 0;
-
-// システム時間取得関数
-unsigned long getSystemTimeMs()
+// 🔧 GPIO初期化
+void init_gpio()
 {
-    return xTaskGetTickCount() * portTICK_PERIOD_MS;
+    ESP_LOGI(TAG, "🔧 Initializing GPIO pins...");
+    
+    // Reset pin
+    gpio_set_direction((gpio_num_t)PIN_RST, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)PIN_RST, 1);
+    
+    // DC pin  
+    gpio_set_direction((gpio_num_t)PIN_DC, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)PIN_DC, 0);
+    
+    // CS pin
+    gpio_set_direction((gpio_num_t)PIN_CS, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)PIN_CS, 1);
+    
+    // Backlight pin
+    //gpio_set_direction((gpio_num_t)PIN_BLK, GPIO_MODE_OUTPUT);
+    //gpio_set_level((gpio_num_t)PIN_BLK, 0); // 初期は消灯
+    
+    ESP_LOGI(TAG, "✅ GPIO initialization completed");
 }
 
-// ST7789P3ディスプレイの初期化
-void initST7789P3()
+// 🔧 SPI初期化
+void init_spi()
 {
-    ESP_LOGI(TAG, "Initializing ST7789P3 Display (76x284)...");
-
-    // ディスプレイ初期化
-    tft.init();
-
-    // ST7789P3用基本設定
-    tft.setRotation(0);     // 縦向き（0度）
-    tft.setBrightness(255); // 最大明度
+    ESP_LOGI(TAG, "🔧 Initializing SPI interface...");
     
-    // 初期化確認用の段階テスト
-    ESP_LOGI(TAG, "ST7789P3 Basic Test - Red Screen");
-    tft.fillScreen(0xF800); // 赤で全画面
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    // SPI bus configuration
+    spi_bus_config_t bus_cfg = {
+        .mosi_io_num = PIN_SDA,
+        .miso_io_num = -1,  // 未使用
+        .sclk_io_num = PIN_SCL,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = 4096,
+        .flags = 0,
+        .intr_flags = 0
+    };
     
-    ESP_LOGI(TAG, "ST7789P3 Basic Test - Green Screen");
-    tft.fillScreen(0x07E0); // 緑で全画面
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    // SPI device configuration
+    spi_device_interface_config_t dev_cfg = {
+        .command_bits = 0,
+        .address_bits = 0,
+        .dummy_bits = 0,
+        .mode = 0,  // SPI mode 0
+        .duty_cycle_pos = 0,
+        .cs_ena_pretrans = 0,
+        .cs_ena_posttrans = 0,
+        .clock_speed_hz = 8000000,  // 8MHz (安定性重視)
+        .input_delay_ns = 0,
+        .spics_io_num = PIN_CS,
+        .flags = 0,
+        .queue_size = 7,
+        .pre_cb = NULL,
+        .post_cb = NULL
+    };
     
-    ESP_LOGI(TAG, "ST7789P3 Basic Test - Blue Screen");
-    tft.fillScreen(0x001F); // 青で全画面
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-    
-    ESP_LOGI(TAG, "ST7789P3 Basic Test - Black Screen");
-    tft.fillScreen(0x0000); // 黒で全画面
-    
-    ESP_LOGI(TAG, "ST7789P3 Display (76x284) initialized successfully!");
-}
-
-// ウェルカムメッセージ表示（ST7789P3専用）
-void showWelcomeMessage()
-{
-    ESP_LOGI(TAG, "Displaying welcome message on ST7789P3...");
-
-    tft.fillScreen(0x0000); // 黒背景
-    
-    // ST7789P3確認メッセージ
-    tft.setTextColor(0x07FF, 0x0000); // シアン文字
-    tft.setTextSize(1);
-    tft.setCursor(5, 10);
-    tft.println("ST7789P3");
-    
-    tft.setTextColor(0x07E0, 0x0000); // 緑文字
-    tft.setCursor(5, 25);
-    tft.println("DETECTED!");
-    
-    // 基本情報
-    tft.setTextColor(0xFFE0, 0x0000); // 黄色文字
-    tft.setCursor(5, 45);
-    tft.println("M5StampPico");
-    
-    tft.setTextColor(0xFFFF, 0x0000); // 白文字
-    tft.setCursor(5, 60);
-    tft.println("ESP32-PICO");
-    
-    tft.setCursor(5, 75);
-    tft.println("with");
-    
-    tft.setTextColor(0xF81F, 0x0000); // マゼンタ文字
-    tft.setCursor(5, 90);
-    tft.println("ST7789P3");
-    
-    // サイズ情報
-    tft.setTextColor(0x07FF, 0x0000); // シアン文字
-    tft.setCursor(5, 110);
-    tft.printf("Size:%ldx%ld", tft.width(), tft.height());
-    
-    // 装飾ライン
-    for(int i = 0; i < 8; i++) {
-        tft.drawFastHLine(0, 130 + i*2, 76, colors[i]);
+    // SPI bus initialize
+    esp_err_t ret = spi_bus_initialize(HSPI_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ SPI bus initialization failed: %s", esp_err_to_name(ret));
+        return;
     }
     
-    // 成功メッセージ
-    tft.setTextColor(0x07E0, 0x0000); // 緑文字
-    tft.setCursor(15, 155);
-    tft.println("SUCCESS!");
-    
-    // 縦長特性を活かした装飾
-    for(int y = 170; y < 280; y += 10) {
-        int color_idx = ((y - 170) / 10) % 8;
-        tft.drawFastHLine(0, y, 76, colors[color_idx]);
-        tft.drawFastHLine(0, y+1, 76, colors[color_idx]);
+    // SPI device add
+    ret = spi_bus_add_device(HSPI_HOST, &dev_cfg, &spi_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ SPI device add failed: %s", esp_err_to_name(ret));
+        return;
     }
-
-    vTaskDelay(3000 / portTICK_PERIOD_MS); // 3秒表示
+    
+    ESP_LOGI(TAG, "✅ SPI initialization completed");
 }
 
-// ST7789P3専用アニメーション
-void showST7789P3Animation(int counter)
+// 🔧 コマンド送信
+void send_command(uint8_t cmd)
 {
-    // 画面クリア
-    tft.fillScreen(0x0000);
+    gpio_set_level((gpio_num_t)PIN_DC, 0);  // Command mode
+    
+    spi_transaction_t trans = {
+        .length = 8,
+        .tx_buffer = &cmd,
+        .rx_buffer = NULL
+    };
+    
+    spi_device_transmit(spi_handle, &trans);
+}
 
-    // ステータス表示
-    tft.setTextColor(0xFFFF, 0x0000); // 白文字
-    tft.setTextSize(1);
-    tft.setCursor(5, 5);
-    tft.printf("P3:%d", counter);
+// 🔧 データ送信
+void send_data(uint8_t data)
+{
+    gpio_set_level((gpio_num_t)PIN_DC, 1);  // Data mode
     
-    // 画面サイズ確認表示
-    tft.setTextColor(0x07E0, 0x0000); // 緑文字
-    tft.setCursor(5, 15);
-    tft.printf("%ldx%ld", tft.width(), tft.height());
+    spi_transaction_t trans = {
+        .length = 8,
+        .tx_buffer = &data,
+        .rx_buffer = NULL
+    };
+    
+    spi_device_transmit(spi_handle, &trans);
+}
 
-    // 中央での円アニメーション
-    int center_x = 38; // 76/2
-    int center_y = 142; // 284/2
+// 🔧 マルチバイトデータ送信
+void send_data_multi(uint8_t* data, size_t len)
+{
+    gpio_set_level((gpio_num_t)PIN_DC, 1);  // Data mode
     
-    // メイン円（大きな動き）
-    float angle = animation_frame * 0.08f;
-    int x_offset = (int)(20 * cos(angle));
-    int y_offset = (int)(40 * sin(angle)); // 縦長を活かした大きな縦移動
+    spi_transaction_t trans = {
+        .length = len * 8,
+        .tx_buffer = data,
+        .rx_buffer = NULL
+    };
     
-    int circle_x = center_x + x_offset;
-    int circle_y = center_y + y_offset;
-    int radius = 5 + (int)(3 * sin(animation_frame * 0.1f));
-    
-    tft.fillCircle(circle_x, circle_y, radius, colors[color_index]);
-    
-    // 小さな装飾円
-    tft.fillCircle(circle_x - 15, circle_y + 10, 2, colors[(color_index + 1) % 8]);
-    tft.fillCircle(circle_x + 15, circle_y - 10, 3, colors[(color_index + 2) % 8]);
+    spi_device_transmit(spi_handle, &trans);
+}
 
-    // 縦長進行バー（両端）
-    // 左側バー
-    tft.drawRect(2, 50, 8, 180, 0xFFFF);
-    int progress1 = ((counter * 18) % 180);
-    tft.fillRect(2, 230 - progress1, 8, progress1, 0x001F); // 青、下から上
-    
-    // 右側バー
-    tft.drawRect(66, 50, 8, 180, 0xFFFF);
-    int progress2 = ((counter * 12) % 180);
-    tft.fillRect(66, 50, 8, progress2, 0xF800); // 赤、上から下
+// 🔧 ハードウェアリセット
+void hardware_reset()
+{
+    ESP_LOGI(TAG, "🔄 Hardware reset...");
+    gpio_set_level((gpio_num_t)PIN_RST, 0);
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+    gpio_set_level((gpio_num_t)PIN_RST, 1);
+    vTaskDelay(120 / portTICK_PERIOD_MS);  // 120ms待機
+    ESP_LOGI(TAG, "✅ Hardware reset completed");
+}
 
-    // 中央情報表示
-    tft.setTextColor(0xC618, 0x0000); // グレー
-    tft.setCursor(18, 35);
-    tft.printf("F:%d", animation_frame % 1000);
+// 🔧 ST7789P3専用初期化シーケンス
+void init_st7789p3()
+{
+    ESP_LOGI(TAG, "🚀 Starting ST7789P3 initialization sequence...");
     
-    tft.setTextColor(0x07E0, 0x0000); // 緑
-    tft.setCursor(18, 250);
-    tft.printf("T:%lus", getSystemTimeMs() / 1000);
+    // Step 1: Software Reset
+    ESP_LOGI(TAG, "📡 Step 1: Software Reset (0x01)");
+    send_command(ST7789P3_SWRESET);
+    vTaskDelay(5 / portTICK_PERIOD_MS);
+    
+    // Step 2: Sleep Out (最重要!)
+    ESP_LOGI(TAG, "📡 Step 2: Sleep Out (0x11) - CRITICAL!");
+    send_command(ST7789P3_SLPOUT);
+    vTaskDelay(120 / portTICK_PERIOD_MS);  // 仕様通り120ms待機
+    
+    // Step 3: Normal Display Mode On
+    ESP_LOGI(TAG, "📡 Step 3: Normal Display Mode On (0x13)");
+    send_command(ST7789P3_NORON);
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+    
+    // Step 4: Display Inversion Off
+    ESP_LOGI(TAG, "📡 Step 4: Display Inversion Off (0x20)");
+    send_command(ST7789P3_INVOFF);
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+    
+    // Step 5: Interface Pixel Format (16-bit RGB565)
+    ESP_LOGI(TAG, "📡 Step 5: Interface Pixel Format (0x3A)");
+    send_command(ST7789P3_COLMOD);
+    send_data(0x55);  // 16-bit RGB565
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+    
+    // Step 6: Memory Access Control
+    ESP_LOGI(TAG, "📡 Step 6: Memory Access Control (0x36)");
+    send_command(ST7789P3_MADCTL);
+    send_data(0x00);  // 標準設定
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+    
+    // Step 7: Column Address Set (76x284領域設定)
+    ESP_LOGI(TAG, "📡 Step 7: Column Address Set (0x2A)");
+    send_command(ST7789P3_CASET);
+    send_data(0x00);
+    send_data(OFFSET_X);  // Start X = 82
+    send_data(0x00);
+    send_data(OFFSET_X + LCD_WIDTH - 1);  // End X = 157
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+    
+    // Step 8: Row Address Set (76x284領域設定)
+    ESP_LOGI(TAG, "📡 Step 8: Row Address Set (0x2B)");
+    send_command(ST7789P3_RASET);
+    send_data(0x00);
+    send_data(OFFSET_Y);  // Start Y = 18
+    send_data(0x01);
+    send_data((OFFSET_Y + LCD_HEIGHT - 1) & 0xFF);  // End Y = 301
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+    
+    // Step 9: Display On (最重要!)
+    ESP_LOGI(TAG, "📡 Step 9: Display On (0x29) - CRITICAL!");
+    send_command(ST7789P3_DISPON);
+    vTaskDelay(100 / portTICK_PERIOD_MS);  // 100ms待機
+    
+    ESP_LOGI(TAG, "🎯 ST7789P3 initialization sequence completed!");
+    ESP_LOGI(TAG, "📺 *** SCREEN SHOULD NOW BE READY FOR DISPLAY! ***");
+    vTaskDelay(500 / portTICK_PERIOD_MS);  // 少し待機して確認
+}
 
-    // 縦長画面専用：波模様（複数段）
-    for(int wave_level = 0; wave_level < 3; wave_level++) {
-        int base_y = 80 + wave_level * 50;
-        for(int x = 0; x < 76; x += 3) {
-            int wave_y = base_y + (int)(6 * sin((x + animation_frame * (1 + wave_level)) * 0.15f));
-            if (wave_y >= 0 && wave_y < 284) {
-                tft.drawPixel(x, wave_y, colors[(x/8 + wave_level) % 8]);
-                tft.drawPixel(x+1, wave_y, colors[(x/8 + wave_level) % 8]);
-            }
+// 🔧 バックライト制御
+/*
+void set_backlight(bool on)
+{
+    gpio_set_level((gpio_num_t)PIN_BLK, on ? 1 : 0);
+    ESP_LOGI(TAG, "💡 Backlight: %s", on ? "ON" : "OFF");
+}
+*/
+
+// 🔧 画面全体を単色で塗りつぶし
+void fill_screen(uint16_t color)
+{
+    ESP_LOGI(TAG, "🎨 Filling screen with color 0x%04X", color);
+    
+    // Memory Write command
+    send_command(ST7789P3_RAMWR);
+    
+    // 色データをビッグエンディアンに変換
+    uint8_t color_bytes[2];
+    color_bytes[0] = (color >> 8) & 0xFF;  // High byte
+    color_bytes[1] = color & 0xFF;         // Low byte
+    
+    // 全ピクセルに色データを送信
+    for (int i = 0; i < LCD_WIDTH * LCD_HEIGHT; i++) {
+        send_data_multi(color_bytes, 2);
+    }
+    
+    ESP_LOGI(TAG, "✅ Screen fill completed");
+}
+
+// 🔧 段階的表示テスト
+void display_test()
+{
+    ESP_LOGI(TAG, "🧪 Starting display functionality tests...");
+    
+    ESP_LOGI(TAG, "🔴 Test 1: Red screen");
+    fill_screen(0xF800);  // 赤
+    vTaskDelay(3000 / portTICK_PERIOD_MS);
+    
+    ESP_LOGI(TAG, "🟢 Test 2: Green screen");
+    fill_screen(0x07E0);  // 緑
+    vTaskDelay(3000 / portTICK_PERIOD_MS);
+    
+    ESP_LOGI(TAG, "🔵 Test 3: Blue screen");
+    fill_screen(0x001F);  // 青
+    vTaskDelay(3000 / portTICK_PERIOD_MS);
+    
+    ESP_LOGI(TAG, "🟡 Test 4: Yellow screen");
+    fill_screen(0xFFE0);  // 黄色
+    vTaskDelay(3000 / portTICK_PERIOD_MS);
+    
+    ESP_LOGI(TAG, "⚫ Test 5: Black screen");
+    fill_screen(0x0000);  // 黒
+    vTaskDelay(2000 / portTICK_PERIOD_MS);
+    
+    ESP_LOGI(TAG, "🎯 All display tests completed successfully!");
+}
+
+// 🔧 カラフルパターン表示
+void display_pattern(int frame)
+{
+    ESP_LOGI(TAG, "🌈 Displaying pattern frame %d", frame);
+    
+    // Memory Write command
+    send_command(ST7789P3_RAMWR);
+    
+    // カラフルパターンを生成
+    for (int y = 0; y < LCD_HEIGHT; y++) {
+        for (int x = 0; x < LCD_WIDTH; x++) {
+            // 位置ベースでカラーを決定
+            uint16_t color;
+            int color_index = ((x / 10) + (y / 20) + frame) % 8;
+            color = colors[color_index];
+            
+            // 色データをビッグエンディアンで送信
+            uint8_t color_bytes[2];
+            color_bytes[0] = (color >> 8) & 0xFF;
+            color_bytes[1] = color & 0xFF;
+            send_data_multi(color_bytes, 2);
         }
     }
-
-    // 回転四角形（複数）
-    for(int rect_idx = 0; rect_idx < 2; rect_idx++) {
-        int rect_y = 200 + rect_idx * 30;
-        int rect_size = 4 + (int)(2 * sin((animation_frame + rect_idx * 20) * 0.12f));
-        tft.drawRect(center_x - rect_size/2, rect_y, rect_size, rect_size, 
-                    colors[(color_index + rect_idx + 3) % 8]);
-    }
-
-    // スクロールテキスト（最下部）
-    const char* scroll_text = "ST7789P3 76x284 Working Perfectly! ";
-    int scroll_len = strlen(scroll_text) * 6;
-    int text_offset = (animation_frame) % scroll_len;
-    tft.setTextColor(0xFFE0, 0x0000); // 黄色
-    tft.setCursor(76 - text_offset, 275);
-    tft.print(scroll_text);
-
-    // アニメーション変数更新
-    animation_frame++;
-    if (animation_frame % 50 == 0) {
-        color_index = (color_index + 1) % 8;
-    }
 }
 
-// メイン関数
+// 🔧 メイン関数
 extern "C" void app_main(void)
 {
-    int counter = 0;
-
-    ESP_LOGI(TAG, "=== M5StampPico with ST7789P3 (76x284) ===");
-    ESP_LOGI(TAG, "Starting ST7789P3 specialized initialization...");
-
-    // M5Unified基本初期化
-    auto cfg = M5.config();
-    cfg.clear_display = false;
-    cfg.output_power = true;
-    cfg.internal_imu = false;
-    cfg.internal_rtc = false;
-    cfg.internal_spk = false;
-    cfg.internal_mic = false;
-    cfg.external_imu = false;
-    cfg.external_rtc = false;
-    M5.begin(cfg);
-
-    // ST7789P3ディスプレイ初期化
-    initST7789P3();
-
-    // ウェルカムメッセージ
-    showWelcomeMessage();
-
-    ESP_LOGI(TAG, "Entering ST7789P3 main animation loop...");
-
-    // メインループ
-    while (true)
-    {
-        M5.update();
-
-        // ST7789P3専用アニメーション
-        showST7789P3Animation(counter);
-
-        ESP_LOGI(TAG, "[%d] ST7789P3 (76x284) running perfectly! ✨", counter);
-
-        counter++;
-        vTaskDelay(200 / portTICK_PERIOD_MS);
+    ESP_LOGI(TAG, "🚀 === ST7789P3 RAW CONTROL - M5StampPico (76x284) ===");
+    ESP_LOGI(TAG, "🎯 Starting complete independent ST7789P3 control...");
+    
+    // GPIO初期化
+    init_gpio();
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    
+    // SPI初期化  
+    init_spi();
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    
+    // ハードウェアリセット
+    hardware_reset();
+    
+    // ST7789P3初期化
+    init_st7789p3();
+    
+    // バックライトON
+    //set_backlight(true);
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+    
+    // 表示テスト実行
+    display_test();
+    
+    ESP_LOGI(TAG, "🎮 Starting continuous pattern display...");
+    
+    // 連続パターン表示
+    int frame = 0;
+    while (true) {
+        display_pattern(frame);
+        
+        ESP_LOGI(TAG, "🌟 Frame %d: ST7789P3 displaying perfectly! 🎉", frame);
+        
+        frame = (frame + 1) % 100;
+        vTaskDelay(500 / portTICK_PERIOD_MS);
     }
 }

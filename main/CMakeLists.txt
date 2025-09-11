@@ -14,7 +14,7 @@ set(COMPONENT_REQUIRES
 set(COMPONENT_PRIV_REQUIRES )
 
 # C++ソースファイルを指定するにゃ
-set(COMPONENT_SRCS "LGFX_ST7789P3_76x284.cpp" "main.cpp")
+set(COMPONENT_SRCS "LGFX_ST7789P3_76x284.cpp" "app_main.cpp")
 
 # インクルードディレクトリの設定にゃ
 set(COMPONENT_ADD_INCLUDEDIRS "")

@@ -1,21 +1,36 @@
 /*
- * LGFX_ST7789P3_76x284.cpp
+ * LGFX_ST7789P3_76x284.cpp (回転対応統合版)
  * ST7789P3 (76×284) 専用LGFXクラス実装
- * ランダムドット問題解決版 for M5StampPico
+ * ランダムドット問題解決 + 回転対応 for M5StampPico
  */
 
-#include "LGFX_ST7789P3_76x284.hpp"
-#include "esp_log.h"
+// #include "LGFX_ST7789P3_76x284.hpp"
+// #include "esp_log.h"
 
 // ログタグ定義
 static const char *TAG = "LGFX_ST7789P3";
+
+// 回転角度別設定値の定義
+const LGFX_ST7789P3_76x284::RotationConfig LGFX_ST7789P3_76x284::rotation_configs[4] = {
+    // rotation=0: 76×284 (縦向き)
+    {82, 18, 76, 284, 0x00, "Portrait (0°)"},
+    
+    // rotation=1: 284×76 (横向き、右回り90度)
+    {18, 82, 284, 76, 0x60, "Landscape Right (90°)"},
+    
+    // rotation=2: 76×284 (縦向き反転、180度)
+    {320-82-76, 320-18-284, 76, 284, 0xC0, "Portrait Flipped (180°)"},
+    
+    // rotation=3: 284×76 (横向き、左回り270度)
+    {320-18-284, 320-82-76, 284, 76, 0xA0, "Landscape Left (270°)"}
+};
 
 /**
  * コンストラクタ：SPI設定とパネル設定
  */
 LGFX_ST7789P3_76x284::LGFX_ST7789P3_76x284(void)
 {
-    ESP_LOGI(TAG, "Initializing LGFX_ST7789P3_76x284 class...");
+    ESP_LOGI(TAG, "Initializing LGFX_ST7789P3_76x284 class (rotation-aware)...");
     
     // SPIバス設定（76×284専用最適化）
     {
@@ -26,7 +41,7 @@ LGFX_ST7789P3_76x284::LGFX_ST7789P3_76x284(void)
         cfg.freq_read = 10000000;        // 10MHz
         cfg.spi_3wire = false;           // 4線式SPI
         cfg.use_lock = true;
-        cfg.dma_channel = 1; // Use DMA channel 1, or set to -1 to disable DMA
+        cfg.dma_channel = 1;
         cfg.pin_sclk = PIN_SCL;
         cfg.pin_mosi = PIN_SDA;
         cfg.pin_miso = -1;
@@ -52,9 +67,9 @@ LGFX_ST7789P3_76x284::LGFX_ST7789P3_76x284(void)
         cfg.panel_width = 76;            // 実際のパネル表示幅
         cfg.panel_height = 284;          // 実際のパネル表示高さ
         
-        // 76×284専用オフセット設定（ST7789P3の特殊配置に対応）
+        // 76×284専用オフセット設定（デフォルト：rotation=0）
         cfg.offset_x = OFFSET_X;         // X方向オフセット
-        cfg.offset_y = OFFSET_Y;         // Y方向オフセット（下20pxランダムドット対策）
+        cfg.offset_y = OFFSET_Y;         // Y方向オフセット
         cfg.offset_rotation = 0;         // 回転オフセット
         
         // 読み込み設定（安定動作優先）
@@ -62,7 +77,7 @@ LGFX_ST7789P3_76x284::LGFX_ST7789P3_76x284(void)
         cfg.dummy_read_bits = 1;         // ダミー読み込みビット
         cfg.readable = false;            // 読み込み無効（書き込み専用）
         
-        // ST7789P3 (76×284)専用カラー設定
+        // ST7789P3専用カラー設定
         cfg.invert = false;              // 色反転無し
         cfg.rgb_order = false;           // RGB順序（false=RGB, true=BGR）
         cfg.dlen_16bit = false;          // 16bit長無し
@@ -79,49 +94,112 @@ LGFX_ST7789P3_76x284::LGFX_ST7789P3_76x284(void)
 }
 
 /**
- * ST7789P3 (76×284) 専用カスタム初期化
- * 標準初期化後に実行する追加設定
+ * 回転対応初期化（推奨メソッド）
+ */
+void LGFX_ST7789P3_76x284::initWithRotation(int rotation)
+{
+    ESP_LOGI(TAG, "=== ST7789P3 Rotation-Aware Initialization ===");
+    
+    if (rotation < 0 || rotation > 3) {
+        ESP_LOGE(TAG, "Invalid rotation: %d. Using rotation 0.", rotation);
+        rotation = 0;
+    }
+    
+    _current_rotation = rotation;
+    const auto& config = rotation_configs[rotation];
+    
+    ESP_LOGI(TAG, "Target rotation: %d - %s", rotation, config.name);
+    ESP_LOGI(TAG, "Expected resolution: %dx%d", config.width, config.height);
+    ESP_LOGI(TAG, "Using offsets: X=%d, Y=%d", config.offset_x, config.offset_y);
+    
+    // 基本初期化
+    init();
+    
+    // 回転設定
+    setRotation(rotation);
+    ESP_LOGI(TAG, "Rotation set to %d, reported size: %ldx%ld", rotation, width(), height());
+    
+    // 回転対応のカスタム初期化実行
+    performRotationAwareInitialization(rotation);
+    
+    ESP_LOGI(TAG, "Final resolution: %ldx%ld", width(), height());
+    ESP_LOGI(TAG, "=== Rotation-Aware Initialization Complete ===");
+}
+
+/**
+ * 従来互換のカスタム初期化（rotation=0専用）
  */
 void LGFX_ST7789P3_76x284::performCustomInitialization()
 {
-    ESP_LOGI(TAG, "=== Starting ST7789P3 (76×284) Custom Initialization ===");
+    ESP_LOGI(TAG, "=== Legacy Custom Initialization (rotation=0) ===");
+    performRotationAwareInitialization(0);
+}
+
+/**
+ * 回転対応カスタム初期化
+ */
+void LGFX_ST7789P3_76x284::performRotationAwareInitialization(int rotation)
+{
+    ESP_LOGI(TAG, "=== Starting Rotation-Aware Custom Initialization ===");
+    
+    if (rotation < 0 || rotation > 3) rotation = 0;
+    
+    const auto& config = rotation_configs[rotation];
+    _current_rotation = rotation;
     
     startWrite();
     
-    // Memory Data Access Control (MADCTL) - 76×284専用設定
-    ESP_LOGI(TAG, "Setting MADCTL (Memory Data Access Control)...");
+    // Memory Data Access Control (MADCTL) - 回転に応じて設定
+    ESP_LOGI(TAG, "Setting MADCTL for rotation %d...", rotation);
     writeCommand(0x36);  // MADCTL
-    writeData(0x00);     // MY=0, MX=0, MV=0, ML=0, RGB=0, MH=0
-    ESP_LOGI(TAG, "✓ MADCTL set to 0x00 (Normal orientation, RGB order)");
+    writeData(config.madctl);
+    ESP_LOGI(TAG, "✓ MADCTL set to 0x%02X", config.madctl);
     
-    // Color Mode - 16bit RGB565確認
+    // Color Mode - 16bit RGB565
     ESP_LOGI(TAG, "Setting Color Mode...");
-    writeCommand(0x3A);  // COLMOD (Interface Pixel Format)
-    writeData(0x05);     // 16-bit/pixel (RGB565)
-    ESP_LOGI(TAG, "✓ COLMOD set to 0x05 (16-bit RGB565)");
+    writeCommand(0x3A);  // COLMOD
+    writeData(0x05);     // 16-bit/pixel
+    ESP_LOGI(TAG, "✓ COLMOD set to RGB565");
     
-    // Column Address Set - 76×284専用（重要！）
-    ESP_LOGI(TAG, "Setting Column Address (CASET)...");
-    uint16_t x_start = OFFSET_X;       // オフセットX
-    uint16_t x_end = x_start + 75;     // 76ピクセル分
+    // Column Address Set - 回転対応
+    ESP_LOGI(TAG, "Setting Column Address (CASET) for rotation %d...", rotation);
+    uint16_t x_start = config.offset_x;
+    uint16_t x_end = x_start + config.width - 1;
+    
     writeCommand(0x2A);  // CASET
-    writeData(x_start >> 8);         // XS[15:8]
-    writeData(x_start & 0xFF);       // XS[7:0]
-    writeData(x_end >> 8);           // XE[15:8] 
-    writeData(x_end & 0xFF);         // XE[7:0]
-    ESP_LOGI(TAG, "✓ CASET set to 0x%04X-0x%04X (%d-%d, width=76)", x_start, x_end, x_start, x_end);
+    writeData(x_start >> 8);
+    writeData(x_start & 0xFF);
+    writeData(x_end >> 8);
+    writeData(x_end & 0xFF);
+    ESP_LOGI(TAG, "✓ CASET set to 0x%04X-0x%04X (%d-%d, width=%d)", 
+             x_start, x_end, x_start, x_end, config.width);
     
-    // Row Address Set - 76×284専用（重要！）
-    ESP_LOGI(TAG, "Setting Row Address (RASET)...");
-    uint16_t y_start = OFFSET_Y;       // オフセットY（下20pxランダムドット対策）
-    uint16_t y_end = y_start + 283;    // 284ピクセル分
+    // Row Address Set - 回転対応
+    ESP_LOGI(TAG, "Setting Row Address (RASET) for rotation %d...", rotation);
+    uint16_t y_start = config.offset_y;
+    uint16_t y_end = y_start + config.height - 1;
+    
     writeCommand(0x2B);  // RASET
-    writeData(y_start >> 8);         // YS[15:8]
-    writeData(y_start & 0xFF);       // YS[7:0]
-    writeData(y_end >> 8);           // YE[15:8]
-    writeData(y_end & 0xFF);         // YE[7:0]
-    ESP_LOGI(TAG, "✓ RASET set to 0x%04X-0x%04X (%d-%d, height=284)", y_start, y_end, y_start, y_end);
+    writeData(y_start >> 8);
+    writeData(y_start & 0xFF);
+    writeData(y_end >> 8);
+    writeData(y_end & 0xFF);
+    ESP_LOGI(TAG, "✓ RASET set to 0x%04X-0x%04X (%d-%d, height=%d)", 
+             y_start, y_end, y_start, y_end, config.height);
     
+    // その他のST7789P3設定
+    setupST7789P3Registers();
+    
+    endWrite();
+    
+    ESP_LOGI(TAG, "=== Rotation-Aware Custom Initialization Complete ===");
+}
+
+/**
+ * ST7789P3レジスタ設定（回転非依存）
+ */
+void LGFX_ST7789P3_76x284::setupST7789P3Registers()
+{
     // Porch Setting - ST7789P3最適化
     ESP_LOGI(TAG, "Setting Porch Control...");
     writeCommand(0xB2);  // PORCTRL
@@ -212,10 +290,51 @@ void LGFX_ST7789P3_76x284::performCustomInitialization()
     // Display On
     ESP_LOGI(TAG, "Turning Display On...");
     writeCommand(0x29);  // DISPON
-    lgfx::v1::delay(120);  // 正しいdelay関数を使用
+    lgfx::v1::delay(120);  // 安定化待ち
     
-    endWrite();
-    
-    ESP_LOGI(TAG, "=== ST7789P3 (76×284) Custom Initialization Complete! ===");
-    ESP_LOGI(TAG, "Display resolution: %ldx%ld", width(), height());
+    ESP_LOGI(TAG, "✓ ST7789P3 display turned on");
 }
+
+/**
+ * 現在の回転角度名を取得
+ */
+const char* LGFX_ST7789P3_76x284::getCurrentRotationName() const
+{
+    if (_current_rotation >= 0 && _current_rotation <= 3) {
+        return rotation_configs[_current_rotation].name;
+    }
+    return "Unknown";
+}
+
+/*
+使用方法：
+
+1. app_main.cppでの修正例：
+
+// 従来のコード（縦向き）
+void initST7789P3_old() {
+    tft.init();
+    tft.setRotation(0);
+    tft.performCustomInitialization();
+}
+
+// 新しいコード（横向き）
+void initST7789P3() {
+    tft.initWithRotation(1);  // 横向きで初期化
+    ESP_LOGI(TAG, "Display mode: %s", tft.getCurrentRotationName());
+}
+
+2. パレット画像システムとの組み合わせ：
+
+PaletteImageRenderer renderer(&tft, tft.width(), tft.height());
+
+3. 回転角度：
+- 0: 76×284 (縦向き) - 従来通り
+- 1: 284×76 (横向き、右回り) - 推奨
+- 2: 76×284 (縦向き反転)
+- 3: 284×76 (横向き、左回り)
+
+互換性：
+- 既存のperformCustomInitialization()はrotation=0で動作
+- initWithRotation()を使えば任意の回転角度で初期化可能
+*/

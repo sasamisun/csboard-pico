@@ -1,464 +1,322 @@
 /*
- * M5StampPico with ST7789P3 Display (76×284)
- * レトロゲーム風16色パレット画像システム対応版
- * 既存のLGFX_ST7789P3_76x284クラスにRetroGamePaletteImageを統合にゃ！🎮
+ * パレット画像システム完全使用例 for M5StampPico （横向き対応版）
+ * dot_landscape.hで生成された画像データを使用する方法
  */
 
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
-#include "esp_system.h"
-#include "driver/gpio.h"
-
-// M5Unified & M5GFX
 #include <M5Unified.h>
 
-// 分離されたST7789P3クラス
+// ST7789P3ディスプレイとレトロゲームシステム
 #include "LGFX_ST7789P3_76x284.hpp"
-
-// レトロゲーム16色パレットシステム
 #include "RetroGamePaletteImage.hpp"
 
-// image
+// 【重要】パレット変換ツールで生成されたヘッダーをインクルード
 #include "dot_landscape.h"
 
-// ログタグ定義
-static const char *TAG = "ST7789P3_Retro_Main";
+static const char *TAG = "PaletteImageExample";
 
 // ディスプレイインスタンス
 static LGFX_ST7789P3_76x284 tft;
 
-// メニュー管理用
-typedef enum {
-    MENU_BASIC_TESTS = 0,
-    MENU_RETRO_BASIC,
-    MENU_RETRO_ANIMATION,
-    MENU_RETRO_CHARACTER,
-    MENU_RETRO_PALETTE_FX,
-    MENU_COUNT
-} menu_item_t;
-
-static menu_item_t currentMenu = MENU_BASIC_TESTS;
-
-// 無効化されたバックライト制御関数
-void setBacklight(uint8_t brightness)
-{
-    ESP_LOGI(TAG, "Backlight control requested: %d%% (Hardware controlled)", brightness);
+// 基本的な描画例（横向き対応）
+void drawImageBasic() {
+    ESP_LOGI(TAG, "=== Basic Image Drawing ===");
+    
+    // 1. 画像データからPaletteImageDataオブジェクトを作成
+    PaletteImageData img(dot_landscape_data, dot_landscape_width, dot_landscape_height);
+    
+    // 2. レンダラーを作成（横向きキャンバス：284x76）
+    PaletteImageRenderer renderer(&tft, tft.width(), tft.height());
+    
+    // 3. 背景をクリア（黒）
+    renderer.clearCanvas(0x0000);
+    
+    // 4. 画像をキャンバスに描画
+    renderer.drawToCanvas(img, 0, 0, true);  // 左上から透明色対応で描画
+    
+    // 5. キャンバスをディスプレイに表示
+    renderer.pushCanvasToDisplayOpaque(0, 0);  // 不透明描画
+    
+    ESP_LOGI(TAG, "Image drawn: %dx%d at (0,0)", dot_landscape_width, dot_landscape_height);
 }
 
-// ディスプレイ初期化
-void initST7789P3()
-{
-    ESP_LOGI(TAG, "=== ST7789P3 (76×284) + Retro Game System Initialization ===");
+// 中央表示の例（横向き対応）
+void drawImageCentered() {
+    ESP_LOGI(TAG, "=== Centered Image Drawing ===");
     
-    ESP_LOGI(TAG, "Pin Configuration:");
-    ESP_LOGI(TAG, "  SCL  : GPIO%d", LGFX_ST7789P3_76x284::getPinSCL());
-    ESP_LOGI(TAG, "  SDA  : GPIO%d", LGFX_ST7789P3_76x284::getPinSDA());
-    ESP_LOGI(TAG, "  RST  : GPIO%d", LGFX_ST7789P3_76x284::getPinRST());
-    ESP_LOGI(TAG, "  DC   : GPIO%d", LGFX_ST7789P3_76x284::getPinDC());
-    ESP_LOGI(TAG, "  CS   : GPIO%d", LGFX_ST7789P3_76x284::getPinCS());
-    ESP_LOGI(TAG, "  BLK  : Disabled (%d)", LGFX_ST7789P3_76x284::getPinBLK());
-    ESP_LOGI(TAG, "Offset Configuration:");
-    ESP_LOGI(TAG, "  X_OFFSET: %d", LGFX_ST7789P3_76x284::getOffsetX());
-    ESP_LOGI(TAG, "  Y_OFFSET: %d (Random dot fix)", LGFX_ST7789P3_76x284::getOffsetY());
+    PaletteImageData img(dot_landscape_data, dot_landscape_width, dot_landscape_height);
+    PaletteImageRenderer renderer(&tft, tft.width(), tft.height());
     
-    // 標準初期化実行
-    ESP_LOGI(TAG, "Calling standard tft.init()...");
-    tft.init();
+    // 背景を青にクリア
+    renderer.clearCanvas(0x001F);  // RGB565で青
     
-    ESP_LOGI(TAG, "Setting rotation to 0...");
-    tft.setRotation(0);
+    // 画像を中央に配置（横向きサイズで計算）
+    int centerX = (tft.width() - dot_landscape_width) / 2;
+    int centerY = (tft.height() - dot_landscape_height) / 2;
     
-    ESP_LOGI(TAG, "Display after standard init: %ldx%ld", tft.width(), tft.height());
+    renderer.drawToCanvas(img, centerX, centerY, true);
+    renderer.pushCanvasToDisplayOpaque(0, 0);
     
-    // 76×284専用カスタム初期化実行
-    ESP_LOGI(TAG, "Performing custom initialization for 76×284...");
-    tft.performCustomInitialization();
-    
-    ESP_LOGI(TAG, "Display initialized successfully!");
-    ESP_LOGI(TAG, "Final resolution: %ldx%ld", tft.width(), tft.height());
-    
-    setBacklight(80);
-    
-    ESP_LOGI(TAG, "=== Initialization Complete ===");
+    ESP_LOGI(TAG, "Centered image at (%d, %d)", centerX, centerY);
 }
 
-// メニュー表示
-void showMenu()
-{
-    tft.fillScreen(0x0000);  // 黒背景
-    tft.setTextColor(0xFFE0, 0x0000);  // 黄色文字
-    tft.setTextSize(1);
+// スケール描画の例（横向き対応）
+void drawImageScaled() {
+    ESP_LOGI(TAG, "=== Scaled Image Drawing ===");
     
-    // タイトル
-    tft.setCursor(2, 5);
-    tft.println("RETRO GAME");
-    tft.setCursor(2, 20);
-    tft.println("PALETTE SYS");
+    PaletteImageData img(dot_landscape_data, dot_landscape_width, dot_landscape_height);
+    PaletteImageRenderer renderer(&tft, tft.width(), tft.height());
     
-    // メニューアイテム
-    const char* menuItems[] = {
-        "1.Basic Tests",
-        "2.Retro Basic",
-        "3.Retro Anim",
-        "4.Character",
-        "5.Palette FX"
-    };
+    renderer.clearCanvas(0x0400);  // ダークグリーン背景
     
-    for (int i = 0; i < MENU_COUNT; i++) {
-        uint16_t color = (i == currentMenu) ? 0xF800 : 0x07E0;  // 選択中は赤、その他は緑
-        tft.setTextColor(color, 0x0000);
-        tft.setCursor(2, 45 + i * 15);
-        tft.println(menuItems[i]);
-    }
+    // 2倍スケールで描画
+    float scaleX = 2.0f;
+    float scaleY = 2.0f;
     
-    // 操作説明
-    tft.setTextColor(0x07FF, 0x0000);  // シアン
-    tft.setCursor(2, 250);
-    tft.println("Auto cycle");
-    tft.setCursor(2, 265);
-    tft.println("in 3 sec");
+    // スケール後のサイズを考慮して中央配置
+    int scaledWidth = (int)(dot_landscape_width * scaleX);
+    int scaledHeight = (int)(dot_landscape_height * scaleY);
+    int x = (tft.width() - scaledWidth) / 2;
+    int y = (tft.height() - scaledHeight) / 2;
     
-    ESP_LOGI(TAG, "Menu displayed: item %d", currentMenu);
+    renderer.drawToCanvasScaled(img, x, y, scaleX, scaleY, true);
+    renderer.pushCanvasToDisplayOpaque(0, 0);
+    
+    ESP_LOGI(TAG, "Scaled image %.1fx%.1f at (%d, %d)", scaleX, scaleY, x, y);
 }
 
-// 詳細カラーテスト（76×284専用）
-void performColorTest()
-{
-    ESP_LOGI(TAG, "=== Color Test Start ===");
+// 複数画像を配置する例（横向き対応）
+void drawMultipleImages() {
+    ESP_LOGI(TAG, "=== Multiple Images Drawing ===");
     
-    // テスト1: 完全な黒
-    ESP_LOGI(TAG, "Test 1: Black screen");
-    tft.fillScreen(0x0000);
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    PaletteImageData img(dot_landscape_data, dot_landscape_width, dot_landscape_height);
+    PaletteImageRenderer renderer(&tft, tft.width(), tft.height());
     
-    // テスト2: 純粋な赤
-    ESP_LOGI(TAG, "Test 2: Pure Red");
-    tft.fillScreen(0xF800);
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    renderer.clearCanvas(0x8410);  // グレー背景
     
-    // テスト3: 純粋な緑
-    ESP_LOGI(TAG, "Test 3: Pure Green");
-    tft.fillScreen(0x07E0);
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    // 小さなサイズで複数配置
+    float scale = 0.5f;
+    int scaledW = (int)(dot_landscape_width * scale);
+    int scaledH = (int)(dot_landscape_height * scale);
     
-    // テスト4: 純粋な青
-    ESP_LOGI(TAG, "Test 4: Pure Blue");
-    tft.fillScreen(0x001F);
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    // 横向きレイアウトで配置（横に多く、縦に少なく）
+    int screenW = tft.width();   // 284
+    int screenH = tft.height();  // 76
     
-    // テスト5: 白
-    ESP_LOGI(TAG, "Test 5: White");
-    tft.fillScreen(0xFFFF);
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    // 左右に配置
+    renderer.drawToCanvasScaled(img, 5, 5, scale, scale, true);                           // 左上
+    renderer.drawToCanvasScaled(img, screenW - scaledW - 5, 5, scale, scale, true);      // 右上
+    renderer.drawToCanvasScaled(img, 5, screenH - scaledH - 5, scale, scale, true);      // 左下
+    renderer.drawToCanvasScaled(img, screenW - scaledW - 5, screenH - scaledH - 5, scale, scale, true); // 右下
     
-    // テスト6: 境界テスト（重要）
-    ESP_LOGI(TAG, "Test 6: Boundary test");
-    tft.fillScreen(0x0000);  // 黒背景
+    // 中央にも配置
+    int centerX = (screenW - scaledW) / 2;
+    int centerY = (screenH - scaledH) / 2;
+    renderer.drawToCanvasScaled(img, centerX, centerY, scale, scale, true);              // 中央
     
-    // 4つの角に色付きピクセル（実際のパネルサイズに基づく）
-    int max_x = tft.width() - 1;   // 75 (76-1)
-    int max_y = tft.height() - 1;  // 283 (284-1)
+    renderer.pushCanvasToDisplayOpaque(0, 0);
     
-    ESP_LOGI(TAG, "Drawing boundary pixels at corners (0,0) to (%d,%d)", max_x, max_y);
-    
-    tft.drawPixel(0, 0, 0xF800);           // 左上：赤
-    tft.drawPixel(max_x, 0, 0x07E0);       // 右上：緑
-    tft.drawPixel(0, max_y, 0x001F);       // 左下：青
-    tft.drawPixel(max_x, max_y, 0xFFFF);   // 右下：白
-    
-    // 中央十字
-    int center_x = tft.width() / 2;   // 38
-    int center_y = tft.height() / 2;  // 142
-    
-    ESP_LOGI(TAG, "Drawing center cross at (%d,%d)", center_x, center_y);
-    tft.drawFastHLine(0, center_y, tft.width(), 0xFFE0);     // 水平線：黄色
-    tft.drawFastVLine(center_x, 0, tft.height(), 0xF81F);    // 垂直線：マゼンタ
-    
-    vTaskDelay(2000 / portTICK_PERIOD_MS);
-    
-    ESP_LOGI(TAG, "=== Color Test Complete ===");
+    ESP_LOGI(TAG, "Five scaled images drawn in landscape layout");
 }
 
-// ストライプパターンテスト
-void performStripeTest()
-{
-    ESP_LOGI(TAG, "=== Stripe Pattern Test ===");
+// アニメーション例（横向き対応）
+void animateImage() {
+    ESP_LOGI(TAG, "=== Image Animation ===");
     
-    // 垂直ストライプ（実際の幅用）
-    ESP_LOGI(TAG, "Drawing vertical stripes...");
-    for(int x = 0; x < tft.width(); x++) {
-        uint16_t color = (x % 8 < 4) ? 0xFFFF : 0x0000;  // 4ピクセルごとに白黒
-        tft.drawFastVLine(x, 0, tft.height(), color);
-    }
-    vTaskDelay(2000 / portTICK_PERIOD_MS);
+    PaletteImageData img(dot_landscape_data, dot_landscape_width, dot_landscape_height);
+    PaletteImageRenderer renderer(&tft, tft.width(), tft.height());
     
-    // 水平ストライプ（実際の高さ用）
-    ESP_LOGI(TAG, "Drawing horizontal stripes...");
-    for(int y = 0; y < tft.height(); y++) {
-        uint16_t color = (y % 16 < 8) ? 0xF800 : 0x07E0;  // 8ピクセルごとに赤緑
-        tft.drawFastHLine(0, y, tft.width(), color);
-    }
-    vTaskDelay(2000 / portTICK_PERIOD_MS);
-    
-    ESP_LOGI(TAG, "=== Stripe Test Complete ===");
-}
-
-// テキスト表示テスト（実際の解像度に最適化）
-void performTextTest()
-{
-    ESP_LOGI(TAG, "=== Text Display Test ===");
-    
-    tft.fillScreen(0x0000);  // 黒背景
-    tft.setTextColor(0xFFFF, 0x0000);  // 白文字、黒背景
-    
-    // 実際の幅に最適化したテキスト配置
-    tft.setTextSize(1);
-    tft.setCursor(2, 10);
-    tft.println("ST7789P3");
-    tft.setCursor(2, 25);
-    tft.println("76x284");
-    tft.setCursor(2, 40);
-    tft.println("RETRO");
-    tft.setCursor(2, 55);
-    tft.println("GAME SYS");
-    
-    tft.setTextSize(2);
-    tft.setCursor(5, 75);
-    tft.println("WORKS");
-    
-    // カラフルなテキスト
-    tft.setTextSize(1);
-    tft.setTextColor(0xF800, 0x0000);  // 赤
-    tft.setCursor(2, 105);
-    tft.println("Red Text");
-    
-    tft.setTextColor(0x07E0, 0x0000);  // 緑
-    tft.setCursor(2, 120);
-    tft.println("Green Text");
-    
-    tft.setTextColor(0x001F, 0x0000);  // 青
-    tft.setCursor(2, 135);
-    tft.println("Blue Text");
-    
-    // 実際の解像度情報表示
-    tft.setTextColor(0xFFE0, 0x0000);  // 黄色
-    tft.setTextSize(1);
-    tft.setCursor(2, 155);
-    tft.printf("W:%ld H:%ld", tft.width(), tft.height());
-    
-    // オフセット情報表示
-    tft.setTextColor(0xF81F, 0x0000);  // マゼンタ
-    tft.setCursor(2, 170);
-    tft.printf("OFS:%d,%d", LGFX_ST7789P3_76x284::getOffsetX(), LGFX_ST7789P3_76x284::getOffsetY());
-    
-    // レトロゲーム情報
-    tft.setTextColor(0x07FF, 0x0000);  // シアン
-    tft.setCursor(2, 190);
-    tft.println("16 COLOR");
-    tft.setCursor(2, 205);
-    tft.println("PALETTE");
-    tft.setCursor(2, 220);
-    tft.println("READY!");
-    
-    vTaskDelay(3000 / portTICK_PERIOD_MS);
-    
-    ESP_LOGI(TAG, "=== Text Test Complete ===");
-}
-
-// 楽しいアニメーションテスト
-void performAnimationTest()
-{
-    ESP_LOGI(TAG, "=== Animation Test ===");
-    
-    const uint16_t colors[] = {
-        0xF800, // 赤
-        0xFD20, // オレンジ
-        0xFFE0, // 黄色
-        0x07E0, // 緑
-        0x07FF, // シアン
-        0x001F, // 青
-        0x781F, // 紫
-        0xF81F  // マゼンタ
-    };
-    
-    // 回転する色の輪
-    for(int frame = 0; frame < 30; frame++) {
-        tft.fillScreen(0x0000);
+    // 60フレームのアニメーション
+    for (int frame = 0; frame < 60; frame++) {
+        renderer.clearCanvas(0x0000);  // 黒背景
         
-        // 中央点
-        int center_x = tft.width() / 2;
-        int center_y = tft.height() / 2;
+        // 正弦波で左右に動かす（横向きなので左右移動の方が効果的）
+        int x = (tft.width() / 2) + (int)(50.0f * sin(frame * 0.2f));  // 中央±50ピクセル
+        int y = (tft.height() - dot_landscape_height) / 2;             // 垂直中央
         
-        // 回転する点群
-        for(int i = 0; i < 8; i++) {
-            float angle = (frame * 0.2f) + (i * M_PI / 4);
-            int x = center_x + 25 * cos(angle);
-            int y = center_y + 40 * sin(angle);
-            
-            if(x >= 0 && x < tft.width() && y >= 0 && y < tft.height()) {
-                tft.fillCircle(x, y, 3, colors[i]);
-            }
+        // 画面外にはみ出さないように制限
+        x = max(0, min(x, tft.width() - dot_landscape_width));
+        
+        renderer.drawToCanvas(img, x, y, true);
+        renderer.pushCanvasToDisplayOpaque(0, 0);
+        
+        vTaskDelay(100 / portTICK_PERIOD_MS);  // 100ms待機
+    }
+    
+    ESP_LOGI(TAG, "Animation complete");
+}
+
+// カスタムパレット使用例（横向き対応）
+void drawWithCustomPalette() {
+    ESP_LOGI(TAG, "=== Custom Palette Drawing ===");
+    
+    // カスタムパレットを作成（セピア調）
+    RetroColorPalette sepiaColors;
+    sepiaColors.initSepiaPalette();
+    
+    // カスタムパレットで画像データを作成
+    PaletteImageData img(dot_landscape_data, dot_landscape_width, dot_landscape_height, &sepiaColors);
+    PaletteImageRenderer renderer(&tft, tft.width(), tft.height());
+    
+    renderer.clearCanvas(0x0000);
+    
+    int centerX = (tft.width() - dot_landscape_width) / 2;
+    int centerY = (tft.height() - dot_landscape_height) / 2;
+    
+    renderer.drawToCanvas(img, centerX, centerY, true);
+    renderer.pushCanvasToDisplayOpaque(0, 0);
+    
+    ESP_LOGI(TAG, "Sepia-toned image drawn");
+}
+
+// パレットカラーエフェクト例（横向き対応）
+void colorCycleEffect() {
+    ESP_LOGI(TAG, "=== Color Cycle Effect ===");
+    
+    PaletteImageData img(dot_landscape_data, dot_landscape_width, dot_landscape_height);
+    PaletteImageRenderer renderer(&tft, tft.width(), tft.height());
+    
+    int centerX = (tft.width() - dot_landscape_width) / 2;
+    int centerY = (tft.height() - dot_landscape_height) / 2;
+    
+    // 120フレームで色相を変化
+    for (int frame = 0; frame < 120; frame++) {
+        renderer.clearCanvas(0x0000);
+        
+        // 動的パレットを作成
+        RetroColorPalette dynamicPalette;
+        for (int i = 1; i < 16; i++) {  // 透明色(0)は変更しない
+            uint16_t hue = (frame * 3 + i * 24) % 360;  // 色相を時間とともに変化
+            dynamicPalette.setColor(i, RetroColorPalette::hsvToRgb565(hue, 80, 90));
         }
         
-        // フレーム情報
-        tft.setTextColor(0xFFFF, 0x0000);
-        tft.setTextSize(1);
-        tft.setCursor(2, 2);
-        tft.printf("Frame:%d", frame);
+        // パレットを変更して描画
+        img.setPalette(dynamicPalette);
+        renderer.drawToCanvas(img, centerX, centerY, true);
+        renderer.pushCanvasToDisplayOpaque(0, 0);
         
-        // 準備完了メッセージ
-        tft.setCursor(2, tft.height() - 30);
-        tft.setTextColor(0x07FF, 0x0000);
-        tft.println("RETRO SYS");
-        tft.setCursor(2, tft.height() - 15);
-        tft.println("READY!");
-        
-        vTaskDelay(100 / portTICK_PERIOD_MS);
+        vTaskDelay(50 / portTICK_PERIOD_MS);
     }
     
-    ESP_LOGI(TAG, "=== Animation Test Complete ===");
+    ESP_LOGI(TAG, "Color cycle complete");
 }
 
-// 基本テスト実行
-void runBasicTests()
-{
-    ESP_LOGI(TAG, "=== Running Basic Tests ===");
+// 横向きレイアウト専用デモ
+void drawLandscapeDemo() {
+    ESP_LOGI(TAG, "=== Landscape Layout Demo ===");
     
-    // 1. 基本カラーテスト
-    performColorTest();
+    PaletteImageData img(dot_landscape_data, dot_landscape_width, dot_landscape_height);
+    PaletteImageRenderer renderer(&tft, tft.width(), tft.height());
     
-    // 2. ストライプパターンテスト
-    performStripeTest();
+    renderer.clearCanvas(0x0010);  // ダークブルー背景
     
-    // 3. テキスト表示テスト
-    performTextTest();
+    // ヘッダーバー（上部）
+    renderer.getCanvas()->fillRect(0, 0, tft.width(), 15, 0x4208);  // グレー
+    renderer.getCanvas()->setTextColor(0xFFFF, 0x4208);
+    renderer.getCanvas()->setTextSize(1);
+    renderer.getCanvas()->setCursor(5, 4);
+    renderer.getCanvas()->println("M5StampPico - Landscape Mode");
     
-    // 4. アニメーションテスト
-    performAnimationTest();
+    // サイドバー（右端）
+    renderer.getCanvas()->fillRect(tft.width()-40, 15, 40, tft.height()-15, 0x0400);  // ダークグリーン
+    renderer.getCanvas()->setTextColor(0xFFFF, 0x0400);
+    renderer.getCanvas()->setCursor(tft.width()-35, 25);
+    renderer.getCanvas()->println("STA");
+    renderer.getCanvas()->setCursor(tft.width()-35, 35);
+    renderer.getCanvas()->println("TUS");
+    renderer.getCanvas()->setCursor(tft.width()-35, 55);
+    renderer.getCanvas()->println("OK!");
     
-    ESP_LOGI(TAG, "=== Basic Tests Complete ===");
+    // メイン画像（左側）
+    int imgX = 10;
+    int imgY = (tft.height() - dot_landscape_height) / 2;
+    renderer.drawToCanvas(img, imgX, imgY, true);
+    
+    renderer.pushCanvasToDisplayOpaque(0, 0);
+    
+    ESP_LOGI(TAG, "Landscape layout demo complete");
 }
 
-// レトロゲームテスト実行
-void runRetroGameTests()
-{
-    ESP_LOGI(TAG, "=== Running Retro Game Tests ===");
-    
-    switch(currentMenu) {
-        case MENU_RETRO_BASIC:
-            ESP_LOGI(TAG, "Running Retro Basic Example");
-            RetroGameExample::basicUsageExample(&tft);
-            vTaskDelay(3000 / portTICK_PERIOD_MS);
-            break;
-            
-        case MENU_RETRO_ANIMATION:
-            ESP_LOGI(TAG, "Running Retro Animation Example");
-            RetroGameExample::animationExample(&tft);
-            break;
-            
-        case MENU_RETRO_CHARACTER:
-            ESP_LOGI(TAG, "Running Character Walk Example");
-            RetroGameExample::characterWalkExample(&tft);
-            break;
-            
-        case MENU_RETRO_PALETTE_FX:
-            ESP_LOGI(TAG, "Running Palette Effect Example");
-            RetroGameExample::paletteEffectExample(&tft);
-            break;
-            
-        default:
-            ESP_LOGI(TAG, "Unknown retro test");
-            break;
-    }
-    
-    ESP_LOGI(TAG, "=== Retro Game Test Complete ===");
-}
-
-// メモリ使用量表示
-void showMemoryUsage()
-{
-    size_t freeHeap = esp_get_free_heap_size();
-    size_t minFreeHeap = esp_get_minimum_free_heap_size();
-    
-    ESP_LOGI(TAG, "=== Memory Usage ===");
-    ESP_LOGI(TAG, "Free heap: %zu bytes", freeHeap);
-    ESP_LOGI(TAG, "Min free heap: %zu bytes", minFreeHeap);
-    
-    // パレット画像のメモリ使用量計算例
-    PaletteImageData heartImage(SAMPLE_HEART_8x8, 8, 8);
-    size_t paletteMemory = heartImage.getMemoryUsage();
-    
-    ESP_LOGI(TAG, "8x8 palette image: %zu bytes", paletteMemory);
-    ESP_LOGI(TAG, "Traditional 8x8 (16bit): %zu bytes", 8 * 8 * 2);
-    ESP_LOGI(TAG, "Memory saving: %.1f%%", 
-             ((float)(8 * 8 * 2 - paletteMemory) / (8 * 8 * 2)) * 100);
-}
-
-// メイン関数
-extern "C" void app_main(void)
-{
-    ESP_LOGI(TAG, "=== ST7789P3 (76×284) Retro Game System Start ===");
+// メイン関数（横向き対応版）
+extern "C" void app_main(void) {
+    ESP_LOGI(TAG, "=== Palette Image System Demo (Landscape) ===");
     
     // M5Unified初期化
     auto cfg = M5.config();
-    cfg.clear_display = false;
-    cfg.output_power = true;
-    cfg.internal_imu = false;
-    cfg.internal_rtc = false;
-    cfg.internal_spk = false;
-    cfg.internal_mic = false;
-    cfg.external_imu = false;
-    cfg.external_rtc = false;
     M5.begin(cfg);
     
-    ESP_LOGI(TAG, "M5Unified initialized");
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    // 【重要】ディスプレイ初期化（横向き）
+    tft.initWithRotation(1);  // 横向き（284×76）
     
-    // ディスプレイ初期化（分離されたクラス使用）
-    initST7789P3();
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    ESP_LOGI(TAG, "Display initialized: %ldx%ld (landscape)", tft.width(), tft.height());
+    ESP_LOGI(TAG, "Image size: %dx%d", dot_landscape_width, dot_landscape_height);
     
-    // メモリ使用量表示
-    showMemoryUsage();
-    
-    ESP_LOGI(TAG, "Starting comprehensive test sequence...");
-    
-    // テストシーケンス実行
     while (true) {
-        // メニュー表示
-        showMenu();
+        // 基本描画
+        drawImageBasic();
         vTaskDelay(3000 / portTICK_PERIOD_MS);
         
-        // 現在のメニューに応じてテスト実行
-        if (currentMenu == MENU_BASIC_TESTS) {
-            runBasicTests();
-        } else {
-            runRetroGameTests();
-        }
+        // 中央描画
+        drawImageCentered();
+        vTaskDelay(3000 / portTICK_PERIOD_MS);
         
-        // 次のメニューへ
-        currentMenu = (menu_item_t)((currentMenu + 1) % MENU_COUNT);
+        // スケール描画
+        drawImageScaled();
+        vTaskDelay(3000 / portTICK_PERIOD_MS);
         
-        // 完了メッセージ
-        tft.fillScreen(0x0000);
-        PaletteImageData img(dot_landscape_data, dot_landscape_width, dot_landscape_height);
-        tft.setTextColor(0x07FF, 0x0000);  // シアン
-        tft.setTextSize(1);
-        tft.setCursor(5, tft.height()/2 - 45);
-        tft.println("TEST");
-        tft.setCursor(5, tft.height()/2 - 30);
-        tft.println("COMPLETE!");
-        tft.setCursor(5, tft.height()/2 - 10);
-        tft.println("RETRO SYS");
-        tft.setCursor(5, tft.height()/2 + 5);
-        tft.println("WORKING!");
-        tft.setCursor(5, tft.height()/2 + 25);
-        tft.println("76x284 OK!");
+        // 複数配置（横向きレイアウト）
+        drawMultipleImages();
+        vTaskDelay(3000 / portTICK_PERIOD_MS);
         
-        vTaskDelay(2000 / portTICK_PERIOD_MS);
+        // アニメーション（左右移動）
+        animateImage();
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
         
-        ESP_LOGI(TAG, "=== Cycling to next test ===");
+        // カスタムパレット
+        drawWithCustomPalette();
+        vTaskDelay(3000 / portTICK_PERIOD_MS);
+        
+        // カラーサイクルエフェクト
+        colorCycleEffect();
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        
+        // 横向けレイアウトデモ
+        drawLandscapeDemo();
+        vTaskDelay(5000 / portTICK_PERIOD_MS);
+        
+        ESP_LOGI(TAG, "=== Demo cycle complete ===");
     }
 }
+
+/*
+主な変更点：
+
+1. ディスプレイ初期化：
+   tft.init();
+   tft.setRotation(0);
+   ↓
+   tft.initWithRotation(1);  // 横向き
+
+2. キャンバスサイズ：
+   PaletteImageRenderer renderer(&tft, 76, 284);
+   ↓
+   PaletteImageRenderer renderer(&tft, tft.width(), tft.height());
+
+3. 座標計算：
+   (76 - width) / 2  →  (tft.width() - width) / 2
+   (284 - height) / 2  →  (tft.height() - height) / 2
+
+4. アニメーション：
+   縦移動 → 横移動（横向きの方が効果的）
+
+5. レイアウト：
+   横向きに最適化されたUI要素配置
+
+結果：
+- 284×76の横向きディスプレイで動作
+- すべての描画が適切にセンタリング
+- 横向きに最適化されたレイアウト
+*/

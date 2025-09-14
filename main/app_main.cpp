@@ -1,5 +1,5 @@
 /*
- * パレット画像システム完全使用例 for M5StampPico （横向き対応版）
+ * パレット画像システム完全使用例 for M5StampPico （横向き対応・エラー修正版）
  * dot_landscape.hで生成された画像データを使用する方法
  */
 
@@ -8,6 +8,8 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include <M5Unified.h>
+#include <algorithm>  // std::max, std::min用
+#include <cmath>      // sin関数用
 
 // ST7789P3ディスプレイとレトロゲームシステム
 #include "LGFX_ST7789P3_76x284.hpp"
@@ -122,7 +124,7 @@ void drawMultipleImages() {
     ESP_LOGI(TAG, "Five scaled images drawn in landscape layout");
 }
 
-// アニメーション例（横向き対応）
+// アニメーション例（横向き対応・エラー修正）
 void animateImage() {
     ESP_LOGI(TAG, "=== Image Animation ===");
     
@@ -134,11 +136,11 @@ void animateImage() {
         renderer.clearCanvas(0x0000);  // 黒背景
         
         // 正弦波で左右に動かす（横向きなので左右移動の方が効果的）
-        int x = (tft.width() / 2) + (int)(50.0f * sin(frame * 0.2f));  // 中央±50ピクセル
-        int y = (tft.height() - dot_landscape_height) / 2;             // 垂直中央
+        int x = (tft.width() / 2) + (int)(50.0f * std::sin(frame * 0.2f));  // 中央±50ピクセル
+        int y = (tft.height() - dot_landscape_height) / 2;                  // 垂直中央
         
-        // 画面外にはみ出さないように制限
-        x = max(0, min(x, tft.width() - dot_landscape_width));
+        // 画面外にはみ出さないように制限（std::max, std::min使用）
+        x = std::max(0, std::min(x, (int)tft.width() - dot_landscape_width));
         
         renderer.drawToCanvas(img, x, y, true);
         renderer.pushCanvasToDisplayOpaque(0, 0);
@@ -240,7 +242,7 @@ void drawLandscapeDemo() {
     ESP_LOGI(TAG, "Landscape layout demo complete");
 }
 
-// メイン関数（横向き対応版）
+// メイン関数（横向き対応版・エラー修正）
 extern "C" void app_main(void) {
     ESP_LOGI(TAG, "=== Palette Image System Demo (Landscape) ===");
     
@@ -292,31 +294,18 @@ extern "C" void app_main(void) {
 }
 
 /*
-主な変更点：
+エラー修正点：
 
-1. ディスプレイ初期化：
-   tft.init();
-   tft.setRotation(0);
-   ↓
-   tft.initWithRotation(1);  // 横向き
+1. インクルード追加：
+   #include <algorithm>  // std::max, std::min用
+   #include <cmath>      // sin関数用
 
-2. キャンバスサイズ：
-   PaletteImageRenderer renderer(&tft, 76, 284);
-   ↓
-   PaletteImageRenderer renderer(&tft, tft.width(), tft.height());
+2. 関数呼び出し修正：
+   max(0, min(...)) → std::max(0, std::min(...))
+   sin(frame * 0.2f) → std::sin(frame * 0.2f)
 
-3. 座標計算：
-   (76 - width) / 2  →  (tft.width() - width) / 2
-   (284 - height) / 2  →  (tft.height() - height) / 2
+3. 型キャスト修正：
+   (int)tft.width() - 明示的キャスト
 
-4. アニメーション：
-   縦移動 → 横移動（横向きの方が効果的）
-
-5. レイアウト：
-   横向きに最適化されたUI要素配置
-
-結果：
-- 284×76の横向きディスプレイで動作
-- すべての描画が適切にセンタリング
-- 横向きに最適化されたレイアウト
+これで、すべてのコンパイルエラーが解決されるはずです。
 */

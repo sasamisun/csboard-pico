@@ -4,8 +4,9 @@
  * ランダムドット問題解決 + 回転対応 for M5StampPico
  */
 
-// #include "LGFX_ST7789P3_76x284.hpp"
-// #include "esp_log.h"
+#include "LGFX_ST7789P3_76x284.hpp"
+#include "esp_log.h"
+#include <cstdint>
 
 // ログタグ定義
 static const char *TAG = "LGFX_ST7789P3";
@@ -16,7 +17,8 @@ const LGFX_ST7789P3_76x284::RotationConfig LGFX_ST7789P3_76x284::rotation_config
     {82, 18, 76, 284, 0x00, "Portrait (0°)"},
     
     // rotation=1: 284×76 (横向き、右回り90度)
-    {18, 82, 284, 76, 0x60, "Landscape Right (90°)"},
+    {0, 0, 284, 76, 0x60, "Landscape Right (90°)"},
+    //{320-18-284, 320-76, 284, 76, 0xA0, "Landscape Right (90°)"},
     
     // rotation=2: 76×284 (縦向き反転、180度)
     {320-82-76, 320-18-284, 76, 284, 0xC0, "Portrait Flipped (180°)"},
@@ -305,36 +307,3 @@ const char* LGFX_ST7789P3_76x284::getCurrentRotationName() const
     }
     return "Unknown";
 }
-
-/*
-使用方法：
-
-1. app_main.cppでの修正例：
-
-// 従来のコード（縦向き）
-void initST7789P3_old() {
-    tft.init();
-    tft.setRotation(0);
-    tft.performCustomInitialization();
-}
-
-// 新しいコード（横向き）
-void initST7789P3() {
-    tft.initWithRotation(1);  // 横向きで初期化
-    ESP_LOGI(TAG, "Display mode: %s", tft.getCurrentRotationName());
-}
-
-2. パレット画像システムとの組み合わせ：
-
-PaletteImageRenderer renderer(&tft, tft.width(), tft.height());
-
-3. 回転角度：
-- 0: 76×284 (縦向き) - 従来通り
-- 1: 284×76 (横向き、右回り) - 推奨
-- 2: 76×284 (縦向き反転)
-- 3: 284×76 (横向き、左回り)
-
-互換性：
-- 既存のperformCustomInitialization()はrotation=0で動作
-- initWithRotation()を使えば任意の回転角度で初期化可能
-*/

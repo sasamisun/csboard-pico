@@ -14,57 +14,10 @@ static const char *TAG = "RetroGamePalette";
 // ===== RetroColorPalette 実装 =====
 
 RetroColorPalette::RetroColorPalette() {
-    initClassicRetroColors();
+    initGameBoyColors();
 }
 
-void RetroColorPalette::initClassicRetroColors() {
-    // ファミコン風16色パレット
-    colors[0]  = 0x0000;  // 透明色（黒）
-    colors[1]  = 0xFFFF;  // 白
-    colors[2]  = 0xF800;  // 赤
-    colors[3]  = 0x07E0;  // 緑
-    colors[4]  = 0x001F;  // 青
-    colors[5]  = 0xFFE0;  // 黄
-    colors[6]  = 0xF81F;  // マゼンタ
-    colors[7]  = 0x07FF;  // シアン
-    colors[8]  = 0x8410;  // グレー
-    colors[9]  = 0xFC00;  // オレンジ
-    colors[10] = 0x8000;  // ダークレッド
-    colors[11] = 0x0400;  // ダークグリーン
-    colors[12] = 0x0010;  // ダークブルー
-    colors[13] = 0x8400;  // ブラウン
-    colors[14] = 0x4208;  // ダークグレー
-    colors[15] = 0x2104;  // ベリーダーク
-    
-    ESP_LOGI(TAG, "Classic retro colors initialized");
-}
 
-void RetroColorPalette::initGrayscalePalette() {
-    colors[0] = 0x0000;  // 透明色（黒）
-    
-    // グレースケール15段階
-    for (int i = 1; i < MAX_COLORS; i++) {
-        uint8_t level = (i * 255) / (MAX_COLORS - 1);
-        colors[i] = rgb888ToRgb565(level, level, level);
-    }
-    
-    ESP_LOGI(TAG, "Grayscale palette initialized");
-}
-
-void RetroColorPalette::initSepiaPalette() {
-    colors[0] = 0x0000;  // 透明色（黒）
-    
-    // セピア調15段階
-    for (int i = 1; i < MAX_COLORS; i++) {
-        float ratio = (float)i / (MAX_COLORS - 1);
-        uint8_t r = (uint8_t)(ratio * 255 * 0.8f);  // 赤みを強く
-        uint8_t g = (uint8_t)(ratio * 255 * 0.6f);  // 緑は中程度
-        uint8_t b = (uint8_t)(ratio * 255 * 0.4f);  // 青は弱く
-        colors[i] = rgb888ToRgb565(r, g, b);
-    }
-    
-    ESP_LOGI(TAG, "Sepia palette initialized");
-}
 
 void RetroColorPalette::setColor(uint8_t index, uint16_t color) {
     if (index < MAX_COLORS) {

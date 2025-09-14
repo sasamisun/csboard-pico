@@ -11,7 +11,9 @@
     "--compile-commands-dir=c:\\Users\\amiha\\esp_project\\csboard-pico\\build"
 ],
 "files.associations": {
-    "*.mermaid": "md",
-    "cmath": "cpp"
+  "*.mermaid": "md",
+  "cmath": "cpp",
+  "random": "cpp",
+  "limits": "cpp"
 }
 }

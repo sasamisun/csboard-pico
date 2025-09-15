@@ -48,7 +48,6 @@ struct RetroColorPalette
         colors[13] = 0x8400; // ブラウン
         colors[14] = 0x4208; // ダークグレー
         colors[15] = 0x2104; // ベリーダーク
-
     }
 
     void initGrayscalePalette()
@@ -61,7 +60,6 @@ struct RetroColorPalette
             uint8_t level = (i * 255) / (MAX_COLORS - 1);
             colors[i] = rgb888ToRgb565(level, level, level);
         }
-
     }
 
     void initSepiaPalette()
@@ -77,29 +75,27 @@ struct RetroColorPalette
             uint8_t b = (uint8_t)(ratio * 255 * 0.4f); // 青は弱く
             colors[i] = rgb888ToRgb565(r, g, b);
         }
-
     }
 
     void initGameBoyColors()
     {
-        // ゲームボーイ風グリーン単色グラデーション
+        // Custom 16-color palette
         colors[0] = 0x0000;  // 透明色（黒）
-        colors[1] = 0x9FE6;  // ライトグリーン（最明色）
-        colors[2] = 0x8FA5;  //
-        colors[3] = 0x7F64;  //
-        colors[4] = 0x6F23;  //
-        colors[5] = 0x5EE2;  //
-        colors[6] = 0x4EA1;  //
-        colors[7] = 0x3E60;  //
-        colors[8] = 0x2E1F;  //
-        colors[9] = 0x1DDE;  //
-        colors[10] = 0x0D9D; //
-        colors[11] = 0x0D5C; //
-        colors[12] = 0x051B; //
-        colors[13] = 0x04DA; //
-        colors[14] = 0x0499; //
-        colors[15] = 0x0258; // ダークグリーン（最暗色）
-
+        colors[1] = 0xD7F2;  // RGB(214,255,148)
+        colors[2] = 0xC771;  // RGB(197,239,140)
+        colors[3] = 0xB6EF;  // RGB(181,223,123)
+        colors[4] = 0xA66E;  // RGB(165,206,115)
+        colors[5] = 0x9DCD;  // RGB(156,186,107)
+        colors[6] = 0x8D4C;  // RGB(140,170,99)
+        colors[7] = 0x7CCA;  // RGB(123,154,82)
+        colors[8] = 0x6C49;  // RGB(107,138,74)
+        colors[9] = 0x5BC8;  // RGB(90,121,66)
+        colors[10] = 0x4B46; // RGB(74,105,49)
+        colors[11] = 0x3AA5; // RGB(58,85,41)
+        colors[12] = 0x3224; // RGB(49,69,33)
+        colors[13] = 0x21A3; // RGB(33,53,25)
+        colors[14] = 0x1121; // RGB(16,36,8)
+        colors[15] = 0x00A0; // RGB(0,20,0)
     }
 
     void initVividColors()
@@ -121,7 +117,6 @@ struct RetroColorPalette
         colors[13] = 0x8010; // パープル
         colors[14] = 0x0410; // ティール
         colors[15] = 0x4000; // マルーン
-
     }
 
     void initJapaneseColors()
@@ -143,7 +138,6 @@ struct RetroColorPalette
         colors[13] = 0x6010; // 菫色（すみれいろ）
         colors[14] = 0x4208; // 鼠色（ねずみいろ）
         colors[15] = 0x2945; // 墨色（すみいろ）
-
     }
 
     void initPastelColors()
@@ -165,7 +159,6 @@ struct RetroColorPalette
         colors[13] = 0xD69A; // パステルローズ
         colors[14] = 0x94B2; // パステルグレー
         colors[15] = 0x6B4D; // パステルブラウン
-
     }
 
     void initNightColors()
@@ -187,7 +180,6 @@ struct RetroColorPalette
         colors[13] = 0x2008; // ダークグレー
         colors[14] = 0x1004; // 濃グレー
         colors[15] = 0x0800; // ディープブラック
-
     }
 
     void initSunsetColors()
@@ -209,7 +201,6 @@ struct RetroColorPalette
         colors[13] = 0x4800; // チョコレート
         colors[14] = 0x3000; // エスプレッソ
         colors[15] = 0x1800; // ダークブラウン
-
     }
 
     void initOceanColors()
@@ -231,7 +222,6 @@ struct RetroColorPalette
         colors[13] = 0x0008; // アビス
         colors[14] = 0x0004; // ディープアビス
         colors[15] = 0x0001; // オーシャンデプス
-
     }
 
     void initForestColors()
@@ -253,7 +243,6 @@ struct RetroColorPalette
         colors[13] = 0x0300; // エバーグリーン
         colors[14] = 0x0200; // ディープフォレスト
         colors[15] = 0x0100; // シャドウグリーン
-
     }
 
     void initNeonColors()
@@ -275,7 +264,6 @@ struct RetroColorPalette
         colors[13] = 0x4210; // ダークネオン
         colors[14] = 0x2108; // シャドウネオン
         colors[15] = 0x1084; // ディープネオン
-
     }
 
     void initCandyColors()
@@ -297,7 +285,6 @@ struct RetroColorPalette
         colors[13] = 0xD69A; // ローズゴールド
         colors[14] = 0x94B2; // シルバー
         colors[15] = 0x6B4D; // チョコレート
-
     }
 
     /**

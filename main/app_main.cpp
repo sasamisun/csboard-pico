@@ -15,7 +15,7 @@
 #include "RetroGamePaletteImage.hpp"
 
 // 【重要】画像データをインクルード
-#include "bglong1.h"
+#include "new_cat.h"
 #include "dot_landscape.h"
 
 static const char *TAG = "ImageSlideshow";

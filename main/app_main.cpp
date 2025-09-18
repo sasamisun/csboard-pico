@@ -29,7 +29,7 @@
 #include "new_cat_sipo2.h" // 猫画像データ
 #include "dot_landscape.h" // 背景画像データ
 
-// 【新】MCP23008ドライバーをインクルード にゃ
+// 【新】MCP23008ドライバーをインクルード
 #include "mcp23008_driver.h"
 #include <esp_timer.h>
 
@@ -43,17 +43,17 @@ const int CAT_HEIGHT = 48;     // 猫画像の高さ
 const int MOVE_SPEED = 2;      // 移動速度（ピクセル/フレーム）
 const int FRAME_DELAY_MS = 50; // フレーム間隔（20FPS）
 
-// MCP23008 I2C設定 にゃ
+// MCP23008 I2C設定
 const int I2C_MASTER_SCL_IO = 33; // SCLピン
 const int I2C_MASTER_SDA_IO = 32; // SDAピン
 const i2c_port_t I2C_MASTER_NUM = I2C_NUM_1;
 const int I2C_MASTER_FREQ_HZ = 100000; // 100kHz
 const uint8_t MCP23008_ADDR = 0x20;    // MCP23008のI2Cアドレス
 
-// 【新】MCP23008ドライバーオブジェクト にゃ
+// 【新】MCP23008ドライバーオブジェクト
 MCP23008 mcpExpander(I2C_MASTER_NUM, MCP23008_ADDR);
 
-// システム状態 にゃ
+// システム状態
 bool mcp_available = false; // MCP23008が使用可能かどうか
 
 // ゲーム状態
@@ -130,7 +130,7 @@ esp_err_t initI2C()
 {
     ESP_LOGI(TAG, "Initializing I2C for MCP23008...");
 
-    // M5Unifiedが既にI2Cを初期化している可能性をチェック にゃ
+    // M5Unifiedが既にI2Cを初期化している可能性をチェック
     esp_err_t err = i2c_driver_delete(I2C_MASTER_NUM);
     if (err == ESP_OK)
     {
@@ -207,7 +207,7 @@ void displayOmikujiResult()
  */
 void displaySwitchState()
 {
-    // MCP23008が使用可能かチェック にゃ
+    // MCP23008が使用可能かチェック
     if (!mcp_available)
     {
         // MCP23008が使用できない場合は "-----" 表示
@@ -220,14 +220,14 @@ void displaySwitchState()
 
     uint8_t switch_state = 0;
 
-    // 新しいMCP23008ドライバーを使用してスイッチ状態を読み取り にゃ
+    // 新しいMCP23008ドライバーを使用してスイッチ状態を読み取り
     esp_err_t err = mcpExpander.readSwitches(&switch_state);
 
     if (err == ESP_OK)
     {
         // スイッチ状態をバイナリ文字列に変換
         // 注意：スイッチが押されている場合は0、離されている場合は1
-        // 表示は押されている場合を1、離されている場合を0にするため反転 にゃ
+        // 表示は押されている場合を1、離されている場合を0にするため反転
         char switch_text[6];
         for (int i = 4; i >= 0; i--)
         {
@@ -237,7 +237,7 @@ void displaySwitchState()
         }
         switch_text[5] = '\0'; // 文字列終端
 
-        // 画面左上にバイナリ表示 にゃ
+        // 画面左上にバイナリ表示
         tft.setTextColor(TFT_YELLOW, TFT_BLACK);
         tft.setTextDatum(TL_DATUM);
         tft.setTextSize(1);
@@ -475,7 +475,7 @@ void initGame()
     {
         catY = tft.height() - CAT_HEIGHT;
     }
-    // I2C初期化 (MCP23008用) にゃ
+    // I2C初期化 (MCP23008用)
     ESP_LOGI(TAG, "Attempting to initialize I2C for MCP23008...");
     esp_err_t err = initI2C();
     if (err != ESP_OK)
@@ -486,10 +486,10 @@ void initGame()
     }
     else
     {
-        // 【追加】I2Cバススキャンを実行 にゃ
+        // 【追加】I2Cバススキャンを実行
         scanI2CDevices();
 
-        // 【更新】MCP23008初期化 にゃ
+        // 【更新】MCP23008初期化
         ESP_LOGI(TAG, "Attempting to initialize MCP23008...");
         err = mcpExpander.begin();
         if (err != ESP_OK)
@@ -592,52 +592,3 @@ extern "C" void app_main(void)
     gameLoop();
 }
 
-/*
-【プログラム説明】
-
-🎮 **ゲーム内容**
-- dot_landscape.h を背景画像として表示
-- new_cat.h の猫画像がその上を左右に移動
-- M5StampPicoの39番ボタンで操作
-- MCP23008のスイッチ状態を画面左上にバイナリ表示
-
-🕹️ **操作方法**
-- ボタン押し続け：猫が右に移動
-- ボタンを離す：猫が左に移動
-- 左端（x=0）で停止、右端で停止
-
-📟 **スイッチ表示**
-- 画面左上に5桁のバイナリ表示 (例: "01101")
-- GP4 GP3 GP2 GP1 GP0 の順で表示
-- 1=スイッチ押下、0=スイッチ開放
-
-⚙️ **技術仕様**
-- 解像度：284×76ピクセル（横向き）
-- フレームレート：20FPS
-- 移動速度：2ピクセル/フレーム
-- GPIO39：内部プルアップ有効
-- I2C: SCL=22, SDA=21, Address=0x20
-
-🎨 **描画システム**
-- 背景とキャラクターを合成描画
-- 透明色対応で重ね合わせ
-- GameBoyカラーパレット使用
-
-🔌 **MCP23008機能**
-- 新しいドライバーライブラリを使用
-- GP0-GP4の5つのスイッチ入力に対応
-- 自動プルアップ設定
-- エラーハンドリング機能付き
-
-📝 **コメント充実**
-- 全ての関数に詳細な説明
-- 設定値の意味を明記
-- デバッグ情報も豊富
-
-✨ **実装の特徴**
-- ボタン状態変化の検出とログ出力
-- 座標制限でキャラクターが画面外に出ない
-- フレームレート制御で滑らかな動作
-- メモリ効率を考慮した描画システム
-- 新しいMCP23008ドライバーでクリーンな制御
-*/

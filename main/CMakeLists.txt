@@ -17,6 +17,7 @@ set(COMPONENT_PRIV_REQUIRES )
 set(COMPONENT_SRCS 
     "LGFX_ST7789P3_76x284.cpp"      # ST7789P3 (76×284) 専用LGFXクラス
     "RetroGamePaletteImage.cpp"     # レトロゲーム16色パレットシステム
+    "mcp23008_driver.cpp"           # MCP23008 I/Oエキスパンダー
     "app_main.cpp"                  # メインアプリケーション
     )
 

@@ -1,7 +1,11 @@
-/*
- * app_main.cpp - 猫ちゃん移動ゲーム
- * dot_landscape.h を背景にして、new_cat.h の猫画像をボタンで操作
- * M5StampPico 39番ボタン: 押す=右移動、離す=左移動
+/**
+ * app_main.cpp
+ *
+ * 機能：
+ * - dot_landscape.h を背景にして、new_cat.h の猫画像をボタンで操作
+ * - M5StampPico 39番ボタン: 押すと猫がのびる
+ * - MCP23008のスイッチ状態をバイナリ (01) で画面表示
+ *
  */
 
 #include <stdio.h>
@@ -18,13 +22,16 @@
 #include "RetroGamePaletteImage.hpp"
 
 // 【重要】画像データをインクルード
-// #include "new_cat.h"       // 猫画像データ
 #include "new_cat_body1.h" // 猫画像データ
 #include "new_cat_head1.h" // 猫画像データ
 #include "new_cat_head2.h" // 猫画像データ
 #include "new_cat_sipo1.h" // 猫画像データ
 #include "new_cat_sipo2.h" // 猫画像データ
 #include "dot_landscape.h" // 背景画像データ
+
+// 【新】MCP23008ドライバーをインクルード にゃ
+#include "mcp23008_driver.h"
+#include <esp_timer.h>
 
 static const char *TAG = "CatMovingGame";
 static LGFX_ST7789P3_76x284 tft;
@@ -36,17 +43,18 @@ const int CAT_HEIGHT = 48;     // 猫画像の高さ
 const int MOVE_SPEED = 2;      // 移動速度（ピクセル/フレーム）
 const int FRAME_DELAY_MS = 50; // フレーム間隔（20FPS）
 
-// MCP23008 I2C設定
-const int I2C_MASTER_SCL_IO = 22;    // SCLピン
-const int I2C_MASTER_SDA_IO = 21;    // SDAピン
-const i2c_port_t I2C_MASTER_NUM = I2C_NUM_0;
+// MCP23008 I2C設定 にゃ
+const int I2C_MASTER_SCL_IO = 33; // SCLピン
+const int I2C_MASTER_SDA_IO = 32; // SDAピン
+const i2c_port_t I2C_MASTER_NUM = I2C_NUM_1;
 const int I2C_MASTER_FREQ_HZ = 100000; // 100kHz
-const uint8_t MCP23008_ADDR = 0x20;   // MCP23008のI2Cアドレス
+const uint8_t MCP23008_ADDR = 0x20;    // MCP23008のI2Cアドレス
 
-// MCP23008 レジスタ
-const uint8_t MCP23008_IODIR = 0x00;  // 入出力方向設定
-const uint8_t MCP23008_GPIO = 0x09;   // GPIO値読み取り
-const uint8_t MCP23008_GPPU = 0x06;   // プルアップ設定
+// 【新】MCP23008ドライバーオブジェクト にゃ
+MCP23008 mcpExpander(I2C_MASTER_NUM, MCP23008_ADDR);
+
+// システム状態 にゃ
+bool mcp_available = false; // MCP23008が使用可能かどうか
 
 // ゲーム状態
 int catX = 0;                     // 猫のX座標
@@ -54,9 +62,8 @@ int catY = 0;                     // 猫のY座標（固定：中央）
 int cat_length = 0;               // 猫の体長
 bool lastButtonState = false;     // 前回のボタン状態
 unsigned long lastUpdateTime = 0; // 最後の更新時間
-
-bool cat_sippo_toggle = false; // しっぽアニメーション用フラグ
-uint8_t lever_switch_state = 0;    // レバースイッチ状態（5bit）
+bool cat_sippo_toggle = false;    // しっぽアニメーション用フラグ
+uint8_t lever_switch_state = 0;   // レバースイッチ状態
 
 // おみくじの結果配列
 const char *omikuji_results[] = {
@@ -72,86 +79,93 @@ int omikuji_result = 0;     // おみくじ結果 (0=未抽選, 1=大吉, 2=中�
 bool omikuji_shown = false; // おみくじ表示フラグ
 
 /**
- * I2C初期化
+ * I2Cバススキャン（診断用）
+ * 接続されているI2Cデバイスのアドレスをすべて検出しますにゃ
  */
-esp_err_t initI2C() {
-    i2c_config_t conf;
+void scanI2CDevices()
+{
+    ESP_LOGI(TAG, "=== I2C Bus Scanner ===");
+    ESP_LOGI(TAG, "Scanning I2C bus on SDA=%d, SCL=%d...", I2C_MASTER_SDA_IO, I2C_MASTER_SCL_IO);
+
+    int found_devices = 0;
+
+    for (uint8_t addr = 1; addr < 127; addr++)
+    {
+        i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+        i2c_master_start(cmd);
+        i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
+        i2c_master_stop(cmd);
+
+        esp_err_t err = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(100));
+        i2c_cmd_link_delete(cmd);
+
+        if (err == ESP_OK)
+        {
+            ESP_LOGI(TAG, "Found I2C device at address 0x%02X", addr);
+            found_devices++;
+
+            // MCP23008の可能性をチェック
+            if (addr >= 0x20 && addr <= 0x27)
+            {
+                uint8_t a2 = (addr - 0x20) >> 2;
+                uint8_t a1 = ((addr - 0x20) >> 1) & 1;
+                uint8_t a0 = (addr - 0x20) & 1;
+                ESP_LOGI(TAG, "  -> Possible MCP23008 (A2=%d, A1=%d, A0=%d)", a2, a1, a0);
+            }
+        }
+    }
+
+    if (found_devices == 0)
+    {
+        ESP_LOGW(TAG, "No I2C devices found!");
+        ESP_LOGW(TAG, "Check wiring: SDA, SCL, VCC, GND, and pull-up resistors");
+    }
+    else
+    {
+        ESP_LOGI(TAG, "I2C scan complete: %d device(s) found", found_devices);
+    }
+    ESP_LOGI(TAG, "=== End I2C Scanner ===");
+}
+esp_err_t initI2C()
+{
+    ESP_LOGI(TAG, "Initializing I2C for MCP23008...");
+
+    // M5Unifiedが既にI2Cを初期化している可能性をチェック にゃ
+    esp_err_t err = i2c_driver_delete(I2C_MASTER_NUM);
+    if (err == ESP_OK)
+    {
+        ESP_LOGI(TAG, "Existing I2C driver deleted");
+    }
+
+    // I2C設定
+    i2c_config_t conf = {};
     conf.mode = I2C_MODE_MASTER;
     conf.sda_io_num = I2C_MASTER_SDA_IO;
     conf.sda_pullup_en = GPIO_PULLUP_ENABLE;
     conf.scl_io_num = I2C_MASTER_SCL_IO;
     conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
     conf.master.clk_speed = I2C_MASTER_FREQ_HZ;
+    conf.clk_flags = 0; // ESP32で推奨
 
-    esp_err_t err = i2c_param_config(I2C_MASTER_NUM, &conf);
-    if (err != ESP_OK) return err;
-
-    return i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0);
-}
-
-/**
- * MCP23008初期化
- */
-esp_err_t initMCP23008() {
-    esp_err_t err;
-
-    // GP0-GP4を入力に設定（bit0-4 = 1）
-    uint8_t iodir_value = 0x1F; // 0001 1111
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (MCP23008_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, MCP23008_IODIR, true);
-    i2c_master_write_byte(cmd, iodir_value, true);
-    i2c_master_stop(cmd);
-    err = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(1000));
-    i2c_cmd_link_delete(cmd);
-
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set IODIR: %s", esp_err_to_name(err));
+    // パラメータ設定
+    err = i2c_param_config(I2C_MASTER_NUM, &conf);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "I2C param config failed: %s", esp_err_to_name(err));
         return err;
     }
 
-    // GP0-GP4のプルアップを有効に設定
-    uint8_t gppu_value = 0x1F; // 0001 1111
-    cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (MCP23008_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, MCP23008_GPPU, true);
-    i2c_master_write_byte(cmd, gppu_value, true);
-    i2c_master_stop(cmd);
-    err = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(1000));
-    i2c_cmd_link_delete(cmd);
-
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set GPPU: %s", esp_err_to_name(err));
+    // ドライバーインストール
+    err = i2c_driver_install(I2C_MASTER_NUM, conf.mode, 0, 0, 0);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "I2C driver install failed: %s", esp_err_to_name(err));
         return err;
     }
 
-    ESP_LOGI(TAG, "MCP23008 initialized successfully");
+    ESP_LOGI(TAG, "I2C initialized successfully (SCL=%d, SDA=%d)",
+             I2C_MASTER_SCL_IO, I2C_MASTER_SDA_IO);
     return ESP_OK;
-}
-
-/**
- * レバースイッチの状態を読み取り
- */
-esp_err_t readLeverSwitch() {
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (MCP23008_ADDR << 1) | I2C_MASTER_WRITE, true);
-    i2c_master_write_byte(cmd, MCP23008_GPIO, true);
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, (MCP23008_ADDR << 1) | I2C_MASTER_READ, true);
-    i2c_master_read_byte(cmd, &lever_switch_state, I2C_MASTER_NACK);
-    i2c_master_stop(cmd);
-    esp_err_t err = i2c_master_cmd_begin(I2C_MASTER_NUM, cmd, pdMS_TO_TICKS(1000));
-    i2c_cmd_link_delete(cmd);
-
-    if (err == ESP_OK) {
-        // GP0-GP4のみを取得（下位5ビット）
-        lever_switch_state &= 0x1F;
-    }
-
-    return err;
 }
 
 /**
@@ -187,22 +201,60 @@ void displayOmikujiResult()
 }
 
 /**
- * レバースイッチ状態を画面に表示
+ * 【更新】MCP23008スイッチ状態をバイナリ (01) で表示
+ * 画面左上にスイッチの状態を01のバイナリで表示しますにゃ
+ * GP4 GP3 GP2 GP1 GP0 の順で表示 (例: "01101")
  */
-void displayLeverSwitchState()
+void displaySwitchState()
 {
-    // 画面左上にレバースイッチの状態を01で表示
-    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-    tft.setTextDatum(TL_DATUM);
-    tft.setTextSize(1);
-
-    char switch_text[6];
-    for (int i = 4; i >= 0; i--) {
-        switch_text[4-i] = ((lever_switch_state >> i) & 1) ? '1' : '0';
+    // MCP23008が使用可能かチェック にゃ
+    if (!mcp_available)
+    {
+        // MCP23008が使用できない場合は "-----" 表示
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+        tft.setTextDatum(TL_DATUM);
+        tft.setTextSize(1);
+        tft.drawString("-----", 5, 5);
+        return;
     }
-    switch_text[5] = '\0';
 
-    tft.drawString(switch_text, 5, 5);
+    uint8_t switch_state = 0;
+
+    // 新しいMCP23008ドライバーを使用してスイッチ状態を読み取り にゃ
+    esp_err_t err = mcpExpander.readSwitches(&switch_state);
+
+    if (err == ESP_OK)
+    {
+        // スイッチ状態をバイナリ文字列に変換
+        // 注意：スイッチが押されている場合は0、離されている場合は1
+        // 表示は押されている場合を1、離されている場合を0にするため反転 にゃ
+        char switch_text[6];
+        for (int i = 4; i >= 0; i--)
+        {
+            // ビットの状態を取得して反転 (0→1, 1→0)
+            bool bit_state = ((switch_state >> i) & 1) == 0; // プルアップなので反転
+            switch_text[4 - i] = bit_state ? '1' : '0';
+        }
+        switch_text[5] = '\0'; // 文字列終端
+
+        // 画面左上にバイナリ表示 にゃ
+        tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+        tft.setTextDatum(TL_DATUM);
+        tft.setTextSize(1);
+        tft.drawString(switch_text, 5, 5);
+
+        ESP_LOGD(TAG, "Switch binary display: %s (raw: 0x%02X)", switch_text, switch_state);
+    }
+    else
+    {
+        // エラー時は "ERROR" 表示
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+        tft.setTextDatum(TL_DATUM);
+        tft.setTextSize(1);
+        tft.drawString("ERROR", 5, 5);
+
+        ESP_LOGE(TAG, "Failed to read switch state: %s", esp_err_to_name(err));
+    }
 }
 
 /**
@@ -372,7 +424,6 @@ void updateCatPosition()
 
 /**
  * ゲーム画面を描画
- * 背景 + 猫を合成して表示
  */
 void drawGameScreen()
 {
@@ -388,8 +439,13 @@ void drawGameScreen()
     // 2. 猫を描画（背景の上に重ねる）
     drawCat(renderer, catX, catY);
 
-    // 3. キャンバスをディスプレイに表示
+    // 3. スイッチの状態を描画
+    displaySwitchState();
+
+    // 4. キャンバスをディスプレイに表示
     renderer.pushCanvasToDisplayOpaque(0, 0);
+
+    ESP_LOGD(TAG, "Game screen drawn: catX=%d, catY=%d, length=%d", catX, catY, cat_length);
 }
 
 /**
@@ -397,30 +453,18 @@ void drawGameScreen()
  */
 void initGame()
 {
-    ESP_LOGI(TAG, "=== Cat Moving Game Initialization ===");
+    ESP_LOGI(TAG, "Initializing game components...");
 
-    // ディスプレイ初期化（rotation=3：横向き284×76）
+    // ディスプレイ初期化
     tft.init();
-    ESP_LOGI(TAG, "Display initialized: %ldx%ld pixels", tft.width(), tft.height());
+    //    tft.setRotation(1);  // 横向き (284x76)
+    tft.fillScreen(TFT_BLACK);
 
-    // I2C初期化
-    esp_err_t err = initI2C();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "I2C initialization failed: %s", esp_err_to_name(err));
-    } else {
-        ESP_LOGI(TAG, "I2C initialized successfully");
-    }
-
-    // MCP23008初期化
-    err = initMCP23008();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "MCP23008 initialization failed: %s", esp_err_to_name(err));
-    }
+    ESP_LOGI(TAG, "Display initialized: %ldx%ld", tft.width(), tft.height());
 
     // ボタン初期化
     initButton();
-
-    // 猫の初期位置設定（画面中央縦、左端横）
+// 猫の初期位置設定（画面中央縦、左端横）
     catX = 0;                             // 左端からスタート
     catY = tft.height() - CAT_HEIGHT - 5; // 縦方向中央
 
@@ -431,28 +475,58 @@ void initGame()
     {
         catY = tft.height() - CAT_HEIGHT;
     }
+    // I2C初期化 (MCP23008用) にゃ
+    ESP_LOGI(TAG, "Attempting to initialize I2C for MCP23008...");
+    esp_err_t err = initI2C();
+    if (err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "I2C initialization failed - MCP23008 will be disabled");
+        ESP_LOGW(TAG, "Game will continue without switch input display");
+        mcp_available = false;
+    }
+    else
+    {
+        // 【追加】I2Cバススキャンを実行 にゃ
+        scanI2CDevices();
 
-    ESP_LOGI(TAG, "Cat initial position: (%d, %d)", catX, catY);
-    ESP_LOGI(TAG, "Background size: %dx%d", dot_landscape_width, dot_landscape_height);
-    ESP_LOGI(TAG, "Cat size: %dx%d", CAT_WIDTH, CAT_HEIGHT);
-    ESP_LOGI(TAG, "Move speed: %d pixels/frame", MOVE_SPEED);
-    ESP_LOGI(TAG, "Frame rate: %d FPS", 1000 / FRAME_DELAY_MS);
-    ESP_LOGI(TAG, "=== Initialization Complete ===");
+        // 【更新】MCP23008初期化 にゃ
+        ESP_LOGI(TAG, "Attempting to initialize MCP23008...");
+        err = mcpExpander.begin();
+        if (err != ESP_OK)
+        {
+            ESP_LOGW(TAG, "MCP23008 initialization failed - switch input disabled");
+            ESP_LOGW(TAG, "Possible causes: wiring, power supply, or device address");
+            ESP_LOGW(TAG, "Check the I2C scan results above for detected devices");
+            mcp_available = false;
+        }
+        else
+        {
+            ESP_LOGI(TAG, "MCP23008 initialized successfully!");
+            mcp_available = true;
+        }
+    }
+
+    // ゲーム初期状態設定
+    catX = 0;
+    catY = (tft.height() - CAT_HEIGHT) / 2; // 画面中央のY座標
+    cat_length = 0;
+    lastButtonState = false;
+    lastUpdateTime = 0;
+
+    ESP_LOGI(TAG, "Game initialization completed (MCP23008: %s)",
+             mcp_available ? "ENABLED" : "DISABLED");
 }
 
 /**
- * ゲームループ
- * メインのゲーム処理
+ * メインループ
  */
 void gameLoop()
 {
-    ESP_LOGI(TAG, "=== Cat Moving Game Started ===");
-    ESP_LOGI(TAG, "Controls: Hold Button = Move Right, Release = Move Left");
+    ESP_LOGI(TAG, "Starting game loop...");
 
     // 初回描画
     drawGameScreen();
 
-    // メインループ
     while (true)
     {
         unsigned long currentTime = xTaskGetTickCount() * portTICK_PERIOD_MS;
@@ -461,7 +535,7 @@ void gameLoop()
         if (currentTime - lastUpdateTime >= FRAME_DELAY_MS)
         {
             // レバースイッチ状態読み取り
-            readLeverSwitch();
+            //readLeverSwitch();
 
             // 猫の位置更新
             updateCatPosition();
@@ -470,7 +544,7 @@ void gameLoop()
             drawGameScreen();
 
             // レバースイッチ状態表示
-            displayLeverSwitchState();
+            //displayLeverSwitchState();
 
             // 時間更新
             lastUpdateTime = currentTime;
@@ -496,12 +570,12 @@ void gameLoop()
  */
 extern "C" void app_main(void)
 {
-    ESP_LOGI(TAG, "=== Cat Moving Game Starting ===");
+    ESP_LOGI(TAG, "=== Cat Moving Game with MCP23008 Switch Display Starting ===");
 
     // 初期化待機
     vTaskDelay(pdMS_TO_TICKS(1000));
 
-    // ゲーム初期化
+    // ゲーム初期化 (エラーが発生してもゲームは続行)
     initGame();
 
     // 初期画面表示
@@ -509,7 +583,12 @@ extern "C" void app_main(void)
     drawGameScreen();
     vTaskDelay(pdMS_TO_TICKS(2000));
 
+    // 状態表示
+    ESP_LOGI(TAG, "Game status: Display=OK, Button=OK, MCP23008=%s",
+             mcp_available ? "OK" : "DISABLED");
+
     // ゲームループ開始
+    ESP_LOGI(TAG, "Starting game loop...");
     gameLoop();
 }
 
@@ -520,22 +599,35 @@ extern "C" void app_main(void)
 - dot_landscape.h を背景画像として表示
 - new_cat.h の猫画像がその上を左右に移動
 - M5StampPicoの39番ボタンで操作
+- MCP23008のスイッチ状態を画面左上にバイナリ表示
 
 🕹️ **操作方法**
 - ボタン押し続け：猫が右に移動
 - ボタンを離す：猫が左に移動
 - 左端（x=0）で停止、右端で停止
 
+📟 **スイッチ表示**
+- 画面左上に5桁のバイナリ表示 (例: "01101")
+- GP4 GP3 GP2 GP1 GP0 の順で表示
+- 1=スイッチ押下、0=スイッチ開放
+
 ⚙️ **技術仕様**
 - 解像度：284×76ピクセル（横向き）
 - フレームレート：20FPS
 - 移動速度：2ピクセル/フレーム
 - GPIO39：内部プルアップ有効
+- I2C: SCL=22, SDA=21, Address=0x20
 
 🎨 **描画システム**
 - 背景とキャラクターを合成描画
 - 透明色対応で重ね合わせ
 - GameBoyカラーパレット使用
+
+🔌 **MCP23008機能**
+- 新しいドライバーライブラリを使用
+- GP0-GP4の5つのスイッチ入力に対応
+- 自動プルアップ設定
+- エラーハンドリング機能付き
 
 📝 **コメント充実**
 - 全ての関数に詳細な説明
@@ -547,4 +639,5 @@ extern "C" void app_main(void)
 - 座標制限でキャラクターが画面外に出ない
 - フレームレート制御で滑らかな動作
 - メモリ効率を考慮した描画システム
+- 新しいMCP23008ドライバーでクリーンな制御
 */

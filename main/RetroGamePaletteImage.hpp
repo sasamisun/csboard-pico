@@ -77,25 +77,25 @@ struct RetroColorPalette
         }
     }
 
-    void initGameBoyColors()
+    void initBasicColors()
     {
         // Custom 16-color palette
-        colors[0] = 0x0000;  // 透明色（黒）
-        colors[1] = 0xD7F2;  // RGB(214,255,148)
-        colors[2] = 0xC771;  // RGB(197,239,140)
-        colors[3] = 0xB6EF;  // RGB(181,223,123)
-        colors[4] = 0xA66E;  // RGB(165,206,115)
-        colors[5] = 0x9DCD;  // RGB(156,186,107)
-        colors[6] = 0x8D4C;  // RGB(140,170,99)
-        colors[7] = 0x7CCA;  // RGB(123,154,82)
-        colors[8] = 0x6C49;  // RGB(107,138,74)
-        colors[9] = 0x5BC8;  // RGB(90,121,66)
-        colors[10] = 0x4B46; // RGB(74,105,49)
-        colors[11] = 0x3AA5; // RGB(58,85,41)
-        colors[12] = 0x3224; // RGB(49,69,33)
-        colors[13] = 0x21A3; // RGB(33,53,25)
-        colors[14] = 0x1121; // RGB(16,36,8)
-        colors[15] = 0x00A0; // RGB(0,20,0)
+        colors[0] = 0xFFFF; // 透明色（黒）
+        colors[1] = 0xF79E; // RGB(240,240,240)
+        colors[2] = 0xF008; // RGB(240,0,64)
+        colors[3] = 0x001F; // RGB(0,0,248)
+        colors[4] = 0x2C8A; // RGB(40,144,80)
+        colors[5] = 0xCEA6; // RGB(200,212,48)
+        colors[6] = 0xEB90; // RGB(232,112,128)
+        colors[7] = 0x0CD8; // RGB(8,152,192)
+        colors[8] = 0xF3A0; // RGB(240,116,0)
+        colors[9] = 0x8000; // RGB(128,0,0)
+        colors[10] =0x01C0; // RGB(0,56,0)
+        colors[11] =0x0014; // RGB(0,0,160)
+        colors[12] =0x7A27; // RGB(120,68,56)
+        colors[13] =0x7BEF; // RGB(120,124,120)
+        colors[14] =0x3908; // RGB(56,32,64)
+        colors[15] =0x18C3; // RGB(24,24,24)
     }
 
     void initVividColors()

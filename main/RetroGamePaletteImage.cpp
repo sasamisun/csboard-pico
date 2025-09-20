@@ -72,7 +72,7 @@ PaletteImageData::PaletteImageData(const uint8_t* imageData, int w, int h, const
     }
     // デフォルトパレットは既にコンストラクタで初期化済み
     
-    ESP_LOGI(TAG, "PaletteImageData created: %dx%d, %zu bytes", width, height, dataSize);
+    //ESP_LOGI(TAG, "PaletteImageData created: %dx%d, %zu bytes", width, height, dataSize);
 }
 
 uint8_t PaletteImageData::getPixelIndex(int x, int y) const {

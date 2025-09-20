@@ -5,6 +5,7 @@
  * - dot_landscape.h を背景にして、new_cat.h の猫画像をボタンで操作
  * - M5StampPico 39番ボタン: 押すと猫がのびる
  * - MCP23008のスイッチ状態をバイナリ (01) で画面表示
+ * - 統一描画システム: 全ての描画をキャンバスに行い、ループの最後に一括転送
  *
  */
 
@@ -16,6 +17,7 @@
 #include "driver/gpio.h"
 #include "esp_random.h"
 #include "driver/i2c.h"
+#include "nvs_flash.h"
 
 // ST7789P3ディスプレイとレトロゲームシステム
 #include "LGFX_ST7789P3_76x284.hpp"
@@ -35,6 +37,10 @@
 
 static const char *TAG = "CatMovingGame";
 static LGFX_ST7789P3_76x284 tft;
+
+// 【新】統一描画システム用キャンバス
+static M5Canvas canvas(&tft);                    // 描画バッファ用キャンバス
+static PaletteImageRenderer *renderer = nullptr; // パレット画像レンダラー
 
 // ゲーム設定
 const int BUTTON_PIN = 39;     // M5StampPicoオンボードボタン
@@ -57,13 +63,20 @@ MCP23008 mcpExpander(I2C_MASTER_NUM, MCP23008_ADDR);
 bool mcp_available = false; // MCP23008が使用可能かどうか
 
 // ゲーム状態
-int catX = 0;                     // 猫のX座標
-int catY = 0;                     // 猫のY座標（固定：中央）
-int cat_length = 0;               // 猫の体長
-bool lastButtonState = false;     // 前回のボタン状態
-unsigned long lastUpdateTime = 0; // 最後の更新時間
-bool cat_sippo_toggle = false;    // しっぽアニメーション用フラグ
-uint8_t lever_switch_state = 0;   // レバースイッチ状態
+int catX = 0;                        // 猫のX座標
+int catY = 0;                        // 猫のY座標（固定：中央）
+int cat_length = 0;                  // 猫の体長
+int max_cat_length = 0;              // 猫の最大体長
+bool lastButtonState = false;        // 前回のボタン状態
+unsigned long lastUpdateTime = 0;    // 最後の更新時間
+bool cat_sippo_toggle = false;       // しっぽアニメーション用フラグ
+uint8_t lever_switch_state = 0;      // レバースイッチ状態
+uint8_t last_lever_switch_state = 0; // 前回のレバースイッチ状態
+bool last_press_lever = false;       // 前回のレバースイッチ状態
+
+// スコアなど管理
+uint64_t score = 0;   // スコア
+nvs_handle nvsHandle; // NVSハンドル
 
 // おみくじの結果配列
 const char *omikuji_results[] = {
@@ -77,6 +90,66 @@ const char *omikuji_results[] = {
 const int OMIKUJI_COUNT = sizeof(omikuji_results) / sizeof(omikuji_results[0]);
 int omikuji_result = 0;     // おみくじ結果 (0=未抽選, 1=大吉, 2=中吉, ...)
 bool omikuji_shown = false; // おみくじ表示フラグ
+
+/**
+ * 統一描画システム初期化
+ * 画面サイズのキャンバスを作成して描画バッファとして使用するにゃ
+ */
+bool initUnifiedDrawingSystem()
+{
+    ESP_LOGI(TAG, "Initializing unified drawing system...");
+
+    // キャンバスを画面サイズで作成（16bit色）
+    if (!canvas.createSprite(tft.width(), tft.height()))
+    {
+        ESP_LOGE(TAG, "Failed to create canvas sprite");
+        return false;
+    }
+
+    // パレット画像レンダラーを初期化（キャンバス用）
+    renderer = new PaletteImageRenderer(&tft, &canvas);
+    if (!renderer)
+    {
+        ESP_LOGE(TAG, "Failed to create palette image renderer");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Unified drawing system initialized: %ldx%ld canvas",
+             canvas.width(), canvas.height());
+    return true;
+}
+
+/**
+ * キャンバスをクリアして描画準備
+ * 毎フレームの最初に呼び出して描画バッファをクリアするにゃ
+ */
+void clearDrawingCanvas()
+{
+    // キャンバスを黒でクリア
+    canvas.fillScreen(TFT_BLACK);
+
+    // レンダラーのキャンバスもクリア
+    if (renderer)
+    {
+        renderer->clearCanvas(0x0000);
+    }
+}
+
+/**
+ * キャンバスをLCDに転送
+ * 全ての描画が完了した後、一度だけ呼び出してLCDに表示するにゃ
+ */
+void pushCanvasToLCD()
+{
+    // パレット画像をキャンバスに反映
+    if (renderer)
+    {
+        renderer->pushCanvasToDisplayOpaque(0, 0);
+    }
+
+    // キャンバス全体をLCDに転送
+    canvas.pushSprite(0, 0);
+}
 
 /**
  * I2Cバススキャン（診断用）
@@ -126,6 +199,7 @@ void scanI2CDevices()
     }
     ESP_LOGI(TAG, "=== End I2C Scanner ===");
 }
+
 esp_err_t initI2C()
 {
     ESP_LOGI(TAG, "Initializing I2C for MCP23008...");
@@ -181,47 +255,48 @@ int drawOmikuji()
 }
 
 /**
- * おみくじ結果を画面に表示
+ * 【統一】おみくじ結果をキャンバスに描画
+ * 直接LCDではなく、キャンバスに描画するにゃ
  */
-void displayOmikujiResult()
+void drawOmikujiResultToCanvas()
 {
     if (omikuji_result > 0 && omikuji_result <= OMIKUJI_COUNT)
     {
-        // 画面中央にテキスト表示
-        tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        tft.setTextDatum(MC_DATUM);
-        tft.setTextSize(2);
+        // キャンバス中央にテキスト表示
+        canvas.setTextColor(TFT_WHITE, TFT_BLACK);
+        canvas.setTextDatum(MC_DATUM);
+        canvas.setTextSize(2);
 
-        // 結果を画面中央に表示
+        // 結果をキャンバス中央に描画
         const char *result_text = omikuji_results[omikuji_result - 1];
-        tft.drawString(result_text, tft.width() / 2, tft.height() / 2);
+        canvas.drawString(result_text, canvas.width() / 2, canvas.height() / 2);
 
-        ESP_LOGI(TAG, "Omikuji result displayed: %s", result_text);
+        ESP_LOGD(TAG, "Omikuji result drawn to canvas: %s", result_text);
     }
 }
 
 /**
- * 【更新】MCP23008スイッチ状態をバイナリ (01) で表示
- * 画面左上にスイッチの状態を01のバイナリで表示しますにゃ
+ * 【統一】MCP23008スイッチ状態をキャンバスにバイナリ表示
+ * 直接LCDではなく、キャンバスにスイッチの状態を描画するにゃ
  * GP4 GP3 GP2 GP1 GP0 の順で表示 (例: "01101")
  */
-void displaySwitchState()
+void drawSwitchStateToCanvas()
 {
     // MCP23008が使用可能かチェック
     if (!mcp_available)
     {
         // MCP23008が使用できない場合は "-----" 表示
-        tft.setTextColor(TFT_RED, TFT_BLACK);
-        tft.setTextDatum(TL_DATUM);
-        tft.setTextSize(1);
-        tft.drawString("-----", 5, 5);
+        canvas.setTextColor(TFT_RED, TFT_BLACK);
+        canvas.setTextDatum(TL_DATUM);
+        canvas.setTextSize(1);
+        canvas.drawString("-err-", 230, 5);
         return;
     }
 
-    uint8_t switch_state = 0;
+    lever_switch_state = 0;
 
     // 新しいMCP23008ドライバーを使用してスイッチ状態を読み取り
-    esp_err_t err = mcpExpander.readSwitches(&switch_state);
+    esp_err_t err = mcpExpander.readSwitches(&lever_switch_state);
 
     if (err == ESP_OK)
     {
@@ -232,26 +307,26 @@ void displaySwitchState()
         for (int i = 4; i >= 0; i--)
         {
             // ビットの状態を取得して反転 (0→1, 1→0)
-            bool bit_state = ((switch_state >> i) & 1) == 0; // プルアップなので反転
-            switch_text[4 - i] = bit_state ? '1' : '0';
+            bool bit_state = ((lever_switch_state >> i) & 1) == 0; // プルアップなので反転
+            switch_text[4 - i] = bit_state ? '*' : '_';
         }
         switch_text[5] = '\0'; // 文字列終端
 
-        // 画面左上にバイナリ表示
-        tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-        tft.setTextDatum(TL_DATUM);
-        tft.setTextSize(1);
-        tft.drawString(switch_text, 5, 5);
+        // キャンバス左上にバイナリ表示
+        canvas.setTextColor(TFT_YELLOW, TFT_BLACK);
+        canvas.setTextDatum(TL_DATUM);
+        canvas.setTextSize(1);
+        canvas.drawString(switch_text, 240, 5);
 
-        ESP_LOGD(TAG, "Switch binary display: %s (raw: 0x%02X)", switch_text, switch_state);
+        // ESP_LOGI(TAG, "Switch binary display: %s (raw: 0x%02X)", switch_text, lever_switch_state);
     }
     else
     {
         // エラー時は "ERROR" 表示
-        tft.setTextColor(TFT_RED, TFT_BLACK);
-        tft.setTextDatum(TL_DATUM);
-        tft.setTextSize(1);
-        tft.drawString("ERROR", 5, 5);
+        canvas.setTextColor(TFT_RED, TFT_BLACK);
+        canvas.setTextDatum(TL_DATUM);
+        canvas.setTextSize(1);
+        canvas.drawString("ERROR", 5, 5);
 
         ESP_LOGE(TAG, "Failed to read switch state: %s", esp_err_to_name(err));
     }
@@ -286,11 +361,14 @@ bool readButton()
 }
 
 /**
- * 背景画像を描画
- * dot_landscape.h を背景として描画
+ * 背景画像をキャンバスに描画
+ * dot_landscape.h を背景として描画するにゃ
  */
-void drawBackground(PaletteImageRenderer &renderer)
+void drawBackgroundToCanvas()
 {
+    if (!renderer)
+        return;
+
     // GameBoyカラーパレットで背景を描画
     RetroColorPalette bgPalette;
     bgPalette.initGameBoyColors();
@@ -299,33 +377,36 @@ void drawBackground(PaletteImageRenderer &renderer)
     PaletteImageData bgImage(dot_landscape_data, dot_landscape_width, dot_landscape_height, &bgPalette);
 
     // 背景をキャンバス中央に配置
-    int bgX = (tft.width() - dot_landscape_width) / 2;
-    int bgY = (tft.height() - dot_landscape_height) / 2;
+    int bgX = (canvas.width() - dot_landscape_width) / 2;
+    int bgY = (canvas.height() - dot_landscape_height) / 2;
 
     // 座標制限（画面からはみ出さないように）
     if (bgX < 0)
         bgX = 0;
     if (bgY < 0)
         bgY = 0;
-    if (bgX > tft.width() - dot_landscape_width)
+    if (bgX > canvas.width() - dot_landscape_width)
     {
-        bgX = tft.width() - dot_landscape_width;
+        bgX = canvas.width() - dot_landscape_width;
     }
-    if (bgY > tft.height() - dot_landscape_height)
+    if (bgY > canvas.height() - dot_landscape_height)
     {
-        bgY = tft.height() - dot_landscape_height;
+        bgY = canvas.height() - dot_landscape_height;
     }
 
     // 背景を描画（透明色対応）
-    renderer.drawToCanvas(bgImage, bgX, bgY, true);
+    renderer->drawToCanvas(bgImage, bgX, bgY, true);
 }
 
 /**
- * 猫画像を描画
- * new_cat_sipo1, new_cat_body1, new_cat_head1 を横並びに描画
+ * 猫画像をキャンバスに描画
+ * new_cat_sipo1, new_cat_body1, new_cat_head1 を横並びに描画するにゃ
  */
-void drawCat(PaletteImageRenderer &renderer, int x, int y)
+void drawCatToCanvas(int x, int y)
 {
+    if (!renderer)
+        return;
+
     // 猫専用カラーパレット（緑系グラデーション）
     RetroColorPalette catPalette;
     catPalette.initGameBoyColors(); // 基本GameBoyパレット
@@ -346,106 +427,143 @@ void drawCat(PaletteImageRenderer &renderer, int x, int y)
     {
         catHeadImage = PaletteImageData(new_cat_head2_data, new_cat_head2_width, new_cat_head2_height, &catPalette);
     }
+
     // 左から順番に描画（しっぽ、体、頭）
     int currentX = x;
-    renderer.drawToCanvas(catSipoImage, currentX, y, true);
+    renderer->drawToCanvas(catSipoImage, currentX, y, true);
     currentX += new_cat_sipo1_width - 1;
 
     // bodyを中間部分に繰り返し描画してcat_lengthに応じて隙間を埋める
     int bodyRepeatCount = cat_length / (new_cat_body1_width - 1);
     for (int i = 0; i <= bodyRepeatCount; i++)
     {
-        renderer.drawToCanvas(catBodyImage, currentX, y, true);
+        renderer->drawToCanvas(catBodyImage, currentX, y, true);
         currentX += new_cat_body1_width - 1;
     }
-    renderer.drawToCanvas(catBodyImage, (new_cat_sipo1_width - 1) + cat_length, y, true);
+    renderer->drawToCanvas(catBodyImage, (new_cat_sipo1_width - 1) + cat_length, y, true);
 
     int cat_length_headless = (new_cat_sipo1_width - 1) + (new_cat_body1_width - 1) + cat_length;
     // 最後にheadを描画
-    renderer.drawToCanvas(catHeadImage, cat_length_headless, y, true);
-
+    renderer->drawToCanvas(catHeadImage, cat_length_headless, y, true);
 }
 
 /**
- * 猫の位置を更新
- * ボタン状態に応じて移動
+ * 猫の伸び具合を更新
+ * ボタン状態に応じて移動するにゃ
  */
-void updateCatPosition()
+void updateCatLength()
 {
     bool buttonPressed = readButton();
-
-    // ボタン状態の変化をログ出力（デバッグ用）
-    if (buttonPressed != lastButtonState)
+    bool press_lever = (~lever_switch_state & 0b00000100) != 0;
+    // ESP_LOGI(TAG, "lever state: %02x", lever_switch_state);
+    //  ボタン状態の変化をログ出力（デバッグ用）
+    if (press_lever != last_press_lever)
     {
-        ESP_LOGI(TAG, "Button %s", buttonPressed ? "PRESSED" : "RELEASED");
 
         // ボタンが押された瞬間におみくじ抽選
-        if (buttonPressed && omikuji_result == 0)
+        if (press_lever && omikuji_result == 0)
         {
             omikuji_result = drawOmikuji();
         }
 
-        lastButtonState = buttonPressed;
+        last_press_lever = press_lever;
     }
 
     // 移動処理
-    if (buttonPressed)
+    if (press_lever)
     {
         // ボタンが押されている間：右に移動
         cat_length += MOVE_SPEED;
-
+        if (cat_length > max_cat_length)
+        {
+            max_cat_length = cat_length;
+        }
         // 最大長制限（頭部が画面外に出ない範囲）
-        int max_cat_length = tft.width() - (new_cat_sipo1_width - 1) - (new_cat_body1_width - 1);
-        if (cat_length > max_cat_length) {
+        int max_cat_length = canvas.width() - (new_cat_sipo1_width - 1) - (new_cat_body1_width - 1);
+        if (cat_length > max_cat_length)
+        {
             cat_length = max_cat_length;
             omikuji_shown = true; // 最大長になったらおみくじ表示
         }
     }
     else
     {
+        // 縮んでいる最中ならtrue
+        bool cat_length_was_aru = false;
+        if (cat_length > 0)
+        {
+            cat_length_was_aru = true;
+        }
         // ボタンが離されている間：左に移動
         cat_length -= MOVE_SPEED;
 
         // 左端制限（x=0より左に行かない）
-        if (cat_length < 0)
+        if (cat_length <= 0)
         {
             cat_length = 0;
             // 猫が完全に縮んだ時にリセット
             omikuji_result = 0;
             omikuji_shown = false;
+
+            // スコア確定
+            if (cat_length_was_aru)
+            {
+                score += max_cat_length;
+                ESP_LOGI(TAG, "Score updated: %llu", score);
+                max_cat_length = 0;
+
+                // NVSにスコア保存
+                esp_err_t ret = nvs_set_i64(nvsHandle, "score", score);
+                if (ret != ESP_OK)
+                {
+                    ESP_LOGE(TAG, "Error saving score to NVS: %s", esp_err_to_name(ret));
+                }
+                else
+                {
+                    nvs_commit(nvsHandle);
+                    ESP_LOGI(TAG, "Score saved to NVS");
+                }
+            }
         }
-    }
-    // おみくじ表示中なら表示
-    if (omikuji_shown)
-    {
-        displayOmikujiResult();
     }
 }
 
 /**
- * ゲーム画面を描画
+ * 【統一】ゲーム画面をキャンバスに描画
+ * 全ての描画要素をキャンバスに描画してから、最後にLCDに転送するにゃ
  */
 void drawGameScreen()
 {
-    // レンダラーを作成
-    PaletteImageRenderer renderer(&tft, tft.width(), tft.height());
+    // キャンバスをクリア
+    clearDrawingCanvas();
 
-    // キャンバスをクリア（黒背景）
-    renderer.clearCanvas(0x0000);
+    // 背景を描画
+    drawBackgroundToCanvas();
 
-    // 1. 背景を描画
-    drawBackground(renderer);
+    // 猫を描画（背景の上に重ねる）
+    drawCatToCanvas(catX, catY);
 
-    // 2. 猫を描画（背景の上に重ねる）
-    drawCat(renderer, catX, catY);
+    // スイッチの状態を描画
+    drawSwitchStateToCanvas();
 
-    // 3. スイッチの状態を描画
-    displaySwitchState();
+    // スコア表示
+    char score_text[20];
+    snprintf(score_text, sizeof(score_text), "[%llumm]", score);
+    canvas.setTextColor(TFT_CYAN, TFT_BLACK);
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextSize(1);
+    canvas.drawString(score_text, 5, 5);
 
-    // 4. キャンバスをディスプレイに表示
-    renderer.pushCanvasToDisplayOpaque(0, 0);
+    // おみくじ表示中なら描画
+    if (omikuji_shown)
+    {
+        drawOmikujiResultToCanvas();
+    }
 
-    ESP_LOGD(TAG, "Game screen drawn: catX=%d, catY=%d, length=%d", catX, catY, cat_length);
+    // 最後にキャンバス全体をLCDに転送（一度だけ！）
+    pushCanvasToLCD();
+
+    // ESP_LOGD(TAG, "Game screen drawn: catX=%d, catY=%d, length=%d", catX, catY, cat_length);
 }
 
 /**
@@ -457,14 +575,21 @@ void initGame()
 
     // ディスプレイ初期化
     tft.init();
-    //    tft.setRotation(1);  // 横向き (284x76)
     tft.fillScreen(TFT_BLACK);
 
     ESP_LOGI(TAG, "Display initialized: %ldx%ld", tft.width(), tft.height());
 
+    // 統一描画システム初期化
+    if (!initUnifiedDrawingSystem())
+    {
+        ESP_LOGE(TAG, "Failed to initialize unified drawing system");
+        return;
+    }
+
     // ボタン初期化
     initButton();
-// 猫の初期位置設定（画面中央縦、左端横）
+
+    // 猫の初期位置設定（画面中央縦、左端横）
     catX = 0;                             // 左端からスタート
     catY = tft.height() - CAT_HEIGHT - 5; // 縦方向中央
 
@@ -475,6 +600,7 @@ void initGame()
     {
         catY = tft.height() - CAT_HEIGHT;
     }
+
     // I2C初期化 (MCP23008用)
     ESP_LOGI(TAG, "Attempting to initialize I2C for MCP23008...");
     esp_err_t err = initI2C();
@@ -508,13 +634,40 @@ void initGame()
 
     // ゲーム初期状態設定
     catX = 0;
-    catY = (tft.height() - CAT_HEIGHT) / 2; // 画面中央のY座標
+    catY = tft.height() - CAT_HEIGHT - 10; // 画面中央のY座標
     cat_length = 0;
     lastButtonState = false;
     lastUpdateTime = 0;
 
     ESP_LOGI(TAG, "Game initialization completed (MCP23008: %s)",
              mcp_available ? "ENABLED" : "DISABLED");
+
+    // NVS初期化
+    nvs_flash_init();
+    esp_err_t ret = nvs_open("save_data", NVS_READWRITE, &nvsHandle);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Error opening NVS: %s", esp_err_to_name(ret));
+    }else{
+        // スコア読み出し
+        int64_t saved_score = 0;
+        ret = nvs_get_i64(nvsHandle, "score", &saved_score);
+        if (ret == ESP_OK)
+        {
+            score = saved_score;
+            ESP_LOGI(TAG, "Loaded score from NVS: %llu", score);
+        }
+        else if (ret == ESP_ERR_NVS_NOT_FOUND)
+        {
+            ESP_LOGI(TAG, "No saved score found in NVS, starting fresh");
+            score = 0;
+        }
+        else
+        {
+            ESP_LOGE(TAG, "Error reading score from NVS: %s", esp_err_to_name(ret));
+            score = 0;
+        }
+    }
 }
 
 /**
@@ -534,17 +687,11 @@ void gameLoop()
         // フレームレート制御
         if (currentTime - lastUpdateTime >= FRAME_DELAY_MS)
         {
-            // レバースイッチ状態読み取り
-            //readLeverSwitch();
+            // 猫の伸び具合更新
+            updateCatLength();
 
-            // 猫の位置更新
-            updateCatPosition();
-
-            // 画面描画
+            // 【統一】画面描画（一箇所ですべての描画を行う）
             drawGameScreen();
-
-            // レバースイッチ状態表示
-            //displayLeverSwitchState();
 
             // 時間更新
             lastUpdateTime = currentTime;
@@ -554,8 +701,8 @@ void gameLoop()
             if (currentTime - lastDebugTime >= 1000)
             {
                 cat_sippo_toggle = !cat_sippo_toggle; // しっぽアニメーション切替
-                ESP_LOGI(TAG, "Cat position: (%d, %d), Button: %s",
-                         catX, catY, readButton() ? "PRESSED" : "RELEASED");
+                // ESP_LOGI(TAG, "Cat position: (%d, %d), Button: %s",
+                //         catX, catY, readButton() ? "PRESSED" : "RELEASED");
                 lastDebugTime = currentTime;
             }
         }
@@ -570,7 +717,7 @@ void gameLoop()
  */
 extern "C" void app_main(void)
 {
-    ESP_LOGI(TAG, "=== Cat Moving Game with MCP23008 Switch Display Starting ===");
+    ESP_LOGI(TAG, "=== Cat Moving Game with Unified Drawing System Starting ===");
 
     // 初期化待機
     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -588,7 +735,6 @@ extern "C" void app_main(void)
              mcp_available ? "OK" : "DISABLED");
 
     // ゲームループ開始
-    ESP_LOGI(TAG, "Starting game loop...");
+    ESP_LOGI(TAG, "Starting unified drawing system game loop...");
     gameLoop();
 }
-

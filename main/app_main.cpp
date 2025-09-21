@@ -18,20 +18,23 @@
 #include "esp_random.h"
 #include "driver/i2c.h"
 #include "nvs_flash.h"
+#include "marumoni.h"
+#include "buzzer.hpp"
 
 // ST7789P3ディスプレイとレトロゲームシステム
 #include "LGFX_ST7789P3_76x284.hpp"
 #include "RetroGamePaletteImage.hpp"
 
-// 【重要】画像データをインクルード
+// 画像データをインクルード
 #include "new_cat_body1.h" // 猫画像データ
 #include "new_cat_head1.h" // 猫画像データ
 #include "new_cat_head2.h" // 猫画像データ
 #include "new_cat_sipo1.h" // 猫画像データ
 #include "new_cat_sipo2.h" // 猫画像データ
 #include "dot_landscape.h" // 背景画像データ
+#include "kuji.h"
 
-// 【新】MCP23008ドライバーをインクルード
+// ドライバーをインクルード
 #include "mcp23008_driver.h"
 #include <esp_timer.h>
 
@@ -74,22 +77,295 @@ uint8_t lever_switch_state = 0;      // レバースイッチ状態
 uint8_t last_lever_switch_state = 0; // 前回のレバースイッチ状態
 bool last_press_lever = false;       // 前回のレバースイッチ状態
 
+int saidai_cat_length = 0; // 猫の最大体長
+
 // スコアなど管理
 uint64_t score = 0;   // スコア
 nvs_handle nvsHandle; // NVSハンドル
 
 // おみくじの結果配列
 const char *omikuji_results[] = {
-    "daikichi",
-    "chuukichi",
-    "shoukichi",
-    "kichi",
-    "suekichi",
-    "kyou",
-    "daikyou"};
+    "大吉",
+    "中吉",
+    "小吉",
+    "吉",
+    "末吉",
+    "凶",
+    "大凶"};
 const int OMIKUJI_COUNT = sizeof(omikuji_results) / sizeof(omikuji_results[0]);
 int omikuji_result = 0;     // おみくじ結果 (0=未抽選, 1=大吉, 2=中吉, ...)
 bool omikuji_shown = false; // おみくじ表示フラグ
+
+// フォント読み込み状態
+bool font_loaded = false; // フォントが読み込まれたかどうか
+
+
+/**
+ * @file buzzer_debug.hpp
+ * @brief ブザー診断用デバッグコード
+ * @author 猫エンジニア
+ * @date 2025年9月21日
+ * 
+ * ブザーが音を出さない問題を診断するためのコード
+ * app_main.cppに一時的に追加して原因を特定する
+ */
+
+#pragma once
+
+#include "esp_log.h"
+#include "driver/ledc.h"
+#include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+/**
+ * ブザー診断テスト
+ * 段階的にテストして問題箇所を特定する
+ */
+void buzzer_diagnostic_test()
+{
+    const char* TAG = "BUZZER_DEBUG";
+    ESP_LOGI(TAG, "=== ブザー診断テスト開始 ===");
+
+    // テスト1: ピン番号の確認
+    ESP_LOGI(TAG, "テスト1: ピン設定確認");
+    const int TEST_PIN = 25;  // M5StampPicoのG25
+    ESP_LOGI(TAG, "使用ピン: GPIO%d", TEST_PIN);
+
+    // ピンをGPIO出力として設定
+    gpio_config_t io_conf = {};
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    io_conf.pin_bit_mask = (1ULL << TEST_PIN);
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    
+    esp_err_t err = gpio_config(&io_conf);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "GPIO設定失敗: %s", esp_err_to_name(err));
+        return;
+    }
+
+    // テスト2: GPIO直接制御テスト（クリック音）
+    ESP_LOGI(TAG, "テスト2: GPIO直接制御（3回クリック）");
+    for (int i = 0; i < 3; i++) {
+        gpio_set_level((gpio_num_t)TEST_PIN, 1);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        gpio_set_level((gpio_num_t)TEST_PIN, 0);
+        vTaskDelay(pdMS_TO_TICKS(100));
+        ESP_LOGI(TAG, "クリック %d/3", i + 1);
+    }
+
+    // テスト3: PWM設定詳細チェック
+    ESP_LOGI(TAG, "テスト3: PWM設定の詳細確認");
+    
+    // 既存のPWMタイマーを削除（競合回避）
+    ledc_timer_rst(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0);
+    ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+
+    // PWMタイマー設定
+    ledc_timer_config_t timer_config = {};
+    timer_config.speed_mode = LEDC_LOW_SPEED_MODE;
+    timer_config.timer_num = LEDC_TIMER_0;
+    timer_config.duty_resolution = LEDC_TIMER_10_BIT;  // より高い解像度
+    timer_config.freq_hz = 1000;  // 1kHz
+    timer_config.clk_cfg = LEDC_AUTO_CLK;
+
+    err = ledc_timer_config(&timer_config);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "PWMタイマー設定失敗: %s", esp_err_to_name(err));
+        return;
+    }
+    ESP_LOGI(TAG, "PWMタイマー設定成功");
+
+    // PWMチャンネル設定
+    ledc_channel_config_t channel_config = {};
+    channel_config.speed_mode = LEDC_LOW_SPEED_MODE;
+    channel_config.channel = LEDC_CHANNEL_0;
+    channel_config.timer_sel = LEDC_TIMER_0;
+    channel_config.intr_type = LEDC_INTR_DISABLE;
+    channel_config.gpio_num = TEST_PIN;
+    channel_config.duty = 512;  // 50% duty (0-1023)
+    channel_config.hpoint = 0;
+
+    err = ledc_channel_config(&channel_config);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "PWMチャンネル設定失敗: %s", esp_err_to_name(err));
+        return;
+    }
+    ESP_LOGI(TAG, "PWMチャンネル設定成功");
+
+    // テスト4: 異なる周波数でのPWMテスト
+    ESP_LOGI(TAG, "テスト4: PWM周波数テスト");
+    
+    uint32_t test_frequencies[] = {100, 440, 1000, 2000, 4000};
+    int num_tests = sizeof(test_frequencies) / sizeof(test_frequencies[0]);
+
+    for (int i = 0; i < num_tests; i++) {
+        uint32_t freq = test_frequencies[i];
+        ESP_LOGI(TAG, "周波数テスト: %ld Hz", freq);
+
+        // 周波数設定
+        err = ledc_set_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0, freq);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "周波数%ld Hz設定失敗: %s", freq, esp_err_to_name(err));
+            continue;
+        }
+
+        // PWM開始
+        err = ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 512);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "PWM duty設定失敗: %s", esp_err_to_name(err));
+            continue;
+        }
+
+        err = ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "PWM duty更新失敗: %s", esp_err_to_name(err));
+            continue;
+        }
+
+        ESP_LOGI(TAG, "%ld Hz で 1秒間PWM出力中...", freq);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        // PWM停止
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+        
+        vTaskDelay(pdMS_TO_TICKS(500));  // 間隔
+    }
+
+    // テスト5: 異なるピンでのテスト（ピン問題の確認）
+    ESP_LOGI(TAG, "テスト5: 他のピンでのテスト");
+    int alternative_pins[] = {26, 27, 14, 12};  // M5StampPicoで使用可能そうなピン
+    int num_alt_pins = sizeof(alternative_pins) / sizeof(alternative_pins[0]);
+
+    for (int i = 0; i < num_alt_pins; i++) {
+        int alt_pin = alternative_pins[i];
+        ESP_LOGI(TAG, "代替ピンテスト: GPIO%d", alt_pin);
+
+        // ピン変更
+        channel_config.gpio_num = alt_pin;
+        err = ledc_channel_config(&channel_config);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "GPIO%d設定失敗: %s", alt_pin, esp_err_to_name(err));
+            continue;
+        }
+
+        // 440Hz で短時間テスト
+        ledc_set_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0, 440);
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 512);
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+        
+        ESP_LOGI(TAG, "GPIO%d で 440Hz 0.5秒出力", alt_pin);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+        
+        vTaskDelay(pdMS_TO_TICKS(300));
+    }
+
+    // PWM停止
+    ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
+    
+    ESP_LOGI(TAG, "=== ブザー診断テスト完了 ===");
+    ESP_LOGI(TAG, "音が聞こえた場合：");
+    ESP_LOGI(TAG, "  - どのテストで音が出たか確認してください");
+    ESP_LOGI(TAG, "  - 特定のピンでのみ音が出る場合、配線を確認");
+    ESP_LOGI(TAG, "音が全く聞こえない場合：");
+    ESP_LOGI(TAG, "  - ブザーの配線を確認（VCC, GND, 信号線）");
+    ESP_LOGI(TAG, "  - ブザーの種類を確認（アクティブ/パッシブ）");
+    ESP_LOGI(TAG, "  - 電源電圧を確認（3.3V/5V）");
+}
+
+/**
+ * 簡易ブザーテスト（app_main.cppで呼び出し用）
+ * initGame()の後に一度だけ呼び出してください
+ */
+void test_buzzer_simple()
+{
+    const char* TAG = "BUZZER_TEST";
+    ESP_LOGI(TAG, "簡易ブザーテスト開始...");
+    
+    // 直接PWMでテスト
+    const int pin = 25;
+    
+    ledc_timer_config_t timer_conf = {};
+    timer_conf.speed_mode = LEDC_LOW_SPEED_MODE;
+    timer_conf.timer_num = LEDC_TIMER_1;  // タイマー1を使用（競合回避）
+    timer_conf.duty_resolution = LEDC_TIMER_8_BIT;
+    timer_conf.freq_hz = 1000;
+    timer_conf.clk_cfg = LEDC_AUTO_CLK;
+    ledc_timer_config(&timer_conf);
+
+    ledc_channel_config_t ch_conf = {};
+    ch_conf.speed_mode = LEDC_LOW_SPEED_MODE;
+    ch_conf.channel = LEDC_CHANNEL_1;  // チャンネル1を使用（競合回避）
+    ch_conf.timer_sel = LEDC_TIMER_1;
+    ch_conf.intr_type = LEDC_INTR_DISABLE;
+    ch_conf.gpio_num = pin;
+    ch_conf.duty = 128;
+    ch_conf.hpoint = 0;
+    ledc_channel_config(&ch_conf);
+
+    // 440Hz（ラの音）を2秒間
+    ESP_LOGI(TAG, "440Hz ブザーテスト（2秒間）...");
+    ledc_set_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_1, 440);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, 128);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
+    
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, 0);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
+    
+    ESP_LOGI(TAG, "ブザーテスト完了");
+}
+
+/**
+ *
+ * フォントデータをM5Canvasに読み込む
+ */
+bool initCustomFont()
+{
+    ESP_LOGI(TAG, "Loading custom VLW font...");
+
+    // M5CanvasにVLWフォントを読み込み
+    // marumoni配列からフォントデータを読み込む
+    canvas.loadFont(marumoni); // VLWバイナリデータを直接指定
+    canvas.setTextSize(1);     // フォントサイズ1を設定
+
+    // TFT画面にも同じフォントを読み込む（念のため）
+    tft.loadFont(marumoni);
+    tft.setTextSize(1); // フォントサイズ1を設定
+
+    font_loaded = true;
+    ESP_LOGI(TAG, "Custom VLW font loaded successfully!");
+    return true;
+}
+
+/**
+ * カスタムテキスト描画（中央基準）
+ * @param text 描画するテキスト
+ * @param x 中央基準のX座標
+ * @param y 中央基準のY座標
+ * @param color テキストカラー（RGB565）
+ */
+void drawCustomTextCenter(const char *text, int x, int y, uint16_t color)
+{
+    if (!font_loaded)
+    {
+        canvas.setTextDatum(MC_DATUM);
+        canvas.setTextColor(color);
+        canvas.drawString(text, x, y);
+        return;
+    }
+
+    canvas.setTextColor(color);
+    canvas.setTextDatum(MC_DATUM); // 中央基準
+    canvas.drawString(text, x, y);
+}
 
 /**
  * 統一描画システム初期化
@@ -112,6 +388,13 @@ bool initUnifiedDrawingSystem()
     {
         ESP_LOGE(TAG, "Failed to create palette image renderer");
         return false;
+    }
+
+    // カスタムフォントを読み込み
+    if (!initCustomFont())
+    {
+        ESP_LOGI(TAG, "Failed to load custom font, using default font");
+        font_loaded = false;
     }
 
     ESP_LOGI(TAG, "Unified drawing system initialized: %ldx%ld canvas",
@@ -255,28 +538,38 @@ int drawOmikuji()
 }
 
 /**
- * 【統一】おみくじ結果をキャンバスに描画
+ * おみくじ結果をキャンバスに描画
  * 直接LCDではなく、キャンバスに描画するにゃ
  */
 void drawOmikujiResultToCanvas()
 {
     if (omikuji_result > 0 && omikuji_result <= OMIKUJI_COUNT)
     {
+        u_int32_t draw_start_point = new_cat_sipo1_width + new_cat_body1_width + new_cat_head1_width + cat_length - 5;
+        // おみくじ表示
+        RetroColorPalette kujiPalette;
+        kujiPalette.initBasicColors(); // 基本パレット
+
+        // おみくじ画像データを作成
+        PaletteImageData kujiImg(kuji_data, kuji_width, kuji_height, &kujiPalette);
+
+        renderer->drawToCanvas(kujiImg, draw_start_point, 35, true);
+
         // キャンバス中央にテキスト表示
-        canvas.setTextColor(TFT_WHITE, TFT_BLACK);
+        canvas.setTextColor(TFT_BLACK);
         canvas.setTextDatum(MC_DATUM);
-        canvas.setTextSize(2);
+        canvas.setTextSize(1);
 
         // 結果をキャンバス中央に描画
         const char *result_text = omikuji_results[omikuji_result - 1];
-        canvas.drawString(result_text, canvas.width() / 2, canvas.height() / 2);
-
+        canvas.drawString(result_text, draw_start_point + (kuji_width / 2), 35 + (kuji_height / 2));
+        canvas.setTextSize(1);
         ESP_LOGD(TAG, "Omikuji result drawn to canvas: %s", result_text);
     }
 }
 
 /**
- * 【統一】MCP23008スイッチ状態をキャンバスにバイナリ表示
+ * MCP23008スイッチ状態をキャンバスにバイナリ表示
  * 直接LCDではなく、キャンバスにスイッチの状態を描画するにゃ
  * GP4 GP3 GP2 GP1 GP0 の順で表示 (例: "01101")
  */
@@ -286,9 +579,8 @@ void drawSwitchStateToCanvas()
     if (!mcp_available)
     {
         // MCP23008が使用できない場合は "-----" 表示
-        canvas.setTextColor(TFT_RED, TFT_BLACK);
+        canvas.setTextColor(TFT_RED);
         canvas.setTextDatum(TL_DATUM);
-        canvas.setTextSize(1);
         canvas.drawString("-err-", 230, 5);
         return;
     }
@@ -313,9 +605,8 @@ void drawSwitchStateToCanvas()
         switch_text[5] = '\0'; // 文字列終端
 
         // キャンバス左上にバイナリ表示
-        canvas.setTextColor(TFT_YELLOW, TFT_BLACK);
+        canvas.setTextColor(TFT_YELLOW);
         canvas.setTextDatum(TL_DATUM);
-        canvas.setTextSize(1);
         canvas.drawString(switch_text, 240, 5);
 
         // ESP_LOGI(TAG, "Switch binary display: %s (raw: 0x%02X)", switch_text, lever_switch_state);
@@ -323,9 +614,8 @@ void drawSwitchStateToCanvas()
     else
     {
         // エラー時は "ERROR" 表示
-        canvas.setTextColor(TFT_RED, TFT_BLACK);
+        canvas.setTextColor(TFT_RED);
         canvas.setTextDatum(TL_DATUM);
-        canvas.setTextSize(1);
         canvas.drawString("ERROR", 5, 5);
 
         ESP_LOGE(TAG, "Failed to read switch state: %s", esp_err_to_name(err));
@@ -478,11 +768,10 @@ void updateCatLength()
         {
             max_cat_length = cat_length;
         }
-        // 最大長制限（頭部が画面外に出ない範囲）
-        int max_cat_length = canvas.width() - (new_cat_sipo1_width - 1) - (new_cat_body1_width - 1);
-        if (cat_length > max_cat_length)
+
+        if (cat_length > saidai_cat_length)
         {
-            cat_length = max_cat_length;
+            cat_length = saidai_cat_length;
             omikuji_shown = true; // 最大長になったらおみくじ表示
         }
     }
@@ -549,10 +838,9 @@ void drawGameScreen()
     // スコア表示
     char score_text[20];
     snprintf(score_text, sizeof(score_text), "[%llumm]", score);
-    canvas.setTextColor(TFT_CYAN, TFT_BLACK);
+    canvas.setTextColor(TFT_CYAN);
     canvas.setTextDatum(TL_DATUM);
-    canvas.setTextSize(1);
-    canvas.drawString(score_text, 5, 5);
+    canvas.drawString(score_text, 0, 0);
 
     // おみくじ表示中なら描画
     if (omikuji_shown)
@@ -591,7 +879,7 @@ void initGame()
 
     // 猫の初期位置設定（画面中央縦、左端横）
     catX = 0;                             // 左端からスタート
-    catY = tft.height() - CAT_HEIGHT - 5; // 縦方向中央
+    catY = tft.height() - CAT_HEIGHT - 2; // 縦方向中央
 
     // 座標制限
     if (catY < 0)
@@ -634,7 +922,7 @@ void initGame()
 
     // ゲーム初期状態設定
     catX = 0;
-    catY = tft.height() - CAT_HEIGHT - 10; // 画面中央のY座標
+    catY = tft.height() - CAT_HEIGHT - 2; // 画面中央のY座標
     cat_length = 0;
     lastButtonState = false;
     lastUpdateTime = 0;
@@ -642,13 +930,35 @@ void initGame()
     ESP_LOGI(TAG, "Game initialization completed (MCP23008: %s)",
              mcp_available ? "ENABLED" : "DISABLED");
 
+    // 最大長制限（頭部が画面外に出ない範囲）
+    saidai_cat_length = canvas.width() - (new_cat_sipo1_width - 1) - (new_cat_body1_width - 1);
+
+    // ブザー初期化
+    ESP_LOGI(TAG, "Initializing buzzer...");
+    esp_err_t buzzer_err = buzzer_init();
+    if (buzzer_err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Buzzer initialization failed: %s", esp_err_to_name(buzzer_err));
+        ESP_LOGW(TAG, "Game will continue without sound effects");
+    }
+    else
+    {
+        ESP_LOGI(TAG, "Buzzer initialized successfully");
+        // 起動音を再生
+        //buzzer_play_sound(BUZZER_SOUND_STARTUP);
+    }
+    // ブザーテスト（必要に応じてコメントアウト）
+    buzzer_play_sound(BUZZER_SOUND_STARTUP);
+
     // NVS初期化
     nvs_flash_init();
     esp_err_t ret = nvs_open("save_data", NVS_READWRITE, &nvsHandle);
     if (ret != ESP_OK)
     {
         ESP_LOGE(TAG, "Error opening NVS: %s", esp_err_to_name(ret));
-    }else{
+    }
+    else
+    {
         // スコア読み出し
         int64_t saved_score = 0;
         ret = nvs_get_i64(nvsHandle, "score", &saved_score);

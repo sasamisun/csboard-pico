@@ -20,6 +20,7 @@ set(COMPONENT_SRCS
     "mcp23008_driver.cpp" # MCP23008 I/Oエキスパンダー
     "buzzer.cpp" # ブザー制御
     "cat_naming.cpp" # 猫の名前入力
+    "game_menu.cpp" # ゲームメニューシステム
     "app_main.cpp" # メインアプリケーション
 )
 

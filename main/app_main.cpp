@@ -21,6 +21,7 @@
 #include "marumoni.h"
 #include "buzzer.hpp"
 #include "cat_naming.h"
+#include "game_menu.h"
 
 // ST7789P3ディスプレイとレトロゲームシステム
 #include "LGFX_ST7789P3_76x284.hpp"
@@ -34,6 +35,18 @@
 #include "new_cat_sipo2.h" // 猫画像データ
 #include "dot_landscape.h" // 背景画像データ
 #include "kuji.h"
+#include "icon_000.h"
+#include "icon_001.h"
+#include "icon_002.h"
+#include "icon_003.h"
+#include "icon_004.h"
+#include "icon_005.h"
+#include "icon_006.h"
+#include "icon_007.h"
+#include "miniicon_000.h"
+#include "miniicon_001.h"
+#include "miniicon_002.h"
+#include "miniicon_003.h"
 
 // ドライバーをインクルード
 #include "mcp23008_driver.h"
@@ -87,6 +100,8 @@ nvs_handle nvsHandle; // NVSハンドル
 
 // おみくじの結果配列
 const char *omikuji_results[] = {
+    "猫吉",
+    "スーパー吉",
     "大吉",
     "中吉",
     "小吉",
@@ -100,6 +115,13 @@ bool omikuji_shown = false; // おみくじ表示フラグ
 
 // フォント読み込み状態
 bool font_loaded = false; // フォントが読み込まれたかどうか
+
+/**
+ * メニュー背景保存用のグローバル関数宣言
+ * game_menu.cppで実装される関数の宣言
+ */
+esp_err_t saveMenuBackground();
+bool hasMenuBackgroundSaved();
 
 /**
  * @file buzzer_debug.hpp
@@ -538,7 +560,6 @@ esp_err_t initI2C()
 
 /**
  * おみくじ抽選処理
- * 1-7の値を返す (1=大吉, 2=中吉, ... 7=大凶)
  */
 int drawOmikuji()
 {
@@ -1051,6 +1072,19 @@ void initGame()
             score = 0;
         }
     }
+
+    // メニューシステム初期化
+    ESP_LOGI(TAG, "Initializing game menu system...");
+    esp_err_t menu_err = initGameMenu(&tft, &canvas, &mcpExpander, renderer, nvsHandle);
+    if (menu_err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Menu system initialization failed: %s", esp_err_to_name(menu_err));
+        ESP_LOGW(TAG, "Game will continue without menu functionality");
+    }
+    else
+    {
+        ESP_LOGI(TAG, "Menu system initialized successfully");
+    }
 }
 
 /**
@@ -1070,6 +1104,54 @@ void gameLoop()
         // フレームレート制御
         if (currentTime - lastUpdateTime >= FRAME_DELAY_MS)
         {
+            // メニュー起動判定
+            if (checkMenuActivation(lever_switch_state))
+            {
+                ESP_LOGI(TAG, "Activating game menu...");
+
+                // === 【重要】メニュー起動前に現在の画面を背景として保存 ===
+                esp_err_t save_result = saveMenuBackground();
+                if (save_result != ESP_OK)
+                {
+                    ESP_LOGI(TAG, "Failed to save menu background: %s", esp_err_to_name(save_result));
+                    ESP_LOGI(TAG, "Menu will use default background");
+                }
+                else
+                {
+                    ESP_LOGI(TAG, "Menu background saved successfully");
+                }
+
+                menu_result_t menu_result = executeGameMenu();
+
+                // メニュー結果の処理
+                switch (menu_result)
+                {
+                case MENU_RESULT_USE_SPEED_UP:
+                    // スピードアップ効果を適用
+                    // 例：移動速度を一時的に増加
+                    ESP_LOGI(TAG, "Speed up effect activated!");
+                    break;
+
+                case MENU_RESULT_USE_SPEED_DOWN:
+                    // スピードダウン効果を適用
+                    ESP_LOGI(TAG, "Speed down effect activated!");
+                    break;
+
+                case MENU_RESULT_USE_BONUS:
+                    // ボーナス効果を適用（例：スコア倍増）
+                    score += 1000; // ボーナスポイント
+                    ESP_LOGI(TAG, "Bonus effect activated! Score: %llu", score);
+                    break;
+
+                default:
+                    ESP_LOGI(TAG, "Menu closed without action");
+                    break;
+                }
+
+                // メニュー終了後、少し待機してからゲーム再開
+                vTaskDelay(pdMS_TO_TICKS(500));
+            }
+
             // 猫の伸び具合更新
             updateCatLength();
 

@@ -31,6 +31,7 @@
 #include "new_cat_body1.h" // 猫画像データ
 #include "new_cat_head1.h" // 猫画像データ
 #include "new_cat_head2.h" // 猫画像データ
+#include "new_cat_head3.h" // 猫画像データ
 #include "new_cat_sipo1.h" // 猫画像データ
 #include "new_cat_sipo2.h" // 猫画像データ
 #include "dot_landscape.h" // 背景画像データ
@@ -63,7 +64,7 @@ static PaletteImageRenderer *renderer = nullptr; // パレット画像レンダ�
 const int BUTTON_PIN = 39;     // M5StampPicoオンボードボタン
 const int CAT_WIDTH = 96;      // 猫画像の幅
 const int CAT_HEIGHT = 48;     // 猫画像の高さ
-const int MOVE_SPEED = 2;      // 移動速度（ピクセル/フレーム）
+const int MOVE_SPEED = 50;      // 移動速度（ピクセル/フレーム）todo:debug power up
 const int FRAME_DELAY_MS = 50; // フレーム間隔（20FPS）
 
 // MCP23008 I2C設定
@@ -99,6 +100,29 @@ uint8_t cat_name[10]; // 猫の名前（数字1='ア', 2='イ', ... 0=終端）
 nvs_handle nvsHandle; // NVSハンドル
 
 // おみくじの結果配列
+// 演出パターンの定義
+typedef enum
+{
+    PATTERN_A_GEKIATSU,   // 激アツ演出（あたり）
+    PATTERN_B_NORMAL_WIN, // 演出なし（あたり）
+    PATTERN_C_ATSUI,      // ちょっとアツい演出（外れ）
+    PATTERN_D_NORMAL_LOSE // 演出なし（外れ）
+} omikuji_pattern_t;
+
+// おみくじ結果の構造体
+typedef struct
+{
+    int result;                // 結果番号（1-9）
+    omikuji_pattern_t pattern; // 演出パターン
+    bool is_win;               // アイテムゲット有無
+    const char *pattern_name;  // 演出名（デバッグ用）
+    uint8_t item_index;        // アイテムインデックス（0=なし, 1=スピードアップ, 2=スピードダウン, 3=ボーナス）
+    uint8_t sound_index;       // サウンドインデックス（0=なし, 1=あたり音, 2=外れ音, 3=すごい音）
+    uint8_t effect_index;      // エフェクトインデックス（0=なし, 1=エフェクト1, 2=エフェクト2, 3=エフェクト3）
+    uint8_t cat_face;          // 猫顔インデックス（0=通常, 1=喜び）
+} omikuji_draw_result_t;
+
+// おみくじの結果配列（既存のものをそのまま使用）
 const char *omikuji_results[] = {
     "猫吉",
     "スーパー吉",
@@ -110,7 +134,35 @@ const char *omikuji_results[] = {
     "凶",
     "大凶"};
 const int OMIKUJI_COUNT = sizeof(omikuji_results) / sizeof(omikuji_results[0]);
-int omikuji_result = 0;     // おみくじ結果 (0=未抽選, 1=大吉, 2=中吉, ...)
+
+// 演出パターン名の配列
+const char *pattern_names[] = {
+    "激アツ演出",
+    "演出なし(あたり)",
+    "ちょっとアツい演出",
+    "演出なし(外れ)"};
+
+// パターンA用の確率テーブル（猫吉30%, スーパー吉70%）
+const int pattern_a_weights[] = {30, 70}; // 猫吉, スーパー吉
+const int pattern_a_results[] = {1, 2};   // インデックス（1始まり）
+const int pattern_a_count = 2;
+
+// パターンB用の確率テーブル（猫吉100%）
+const int pattern_b_weights[] = {100}; // 猫吉
+const int pattern_b_results[] = {1};   // インデックス（1始まり）
+const int pattern_b_count = 1;
+
+// パターンC用の確率テーブル（大吉10%, 中吉10%, 小吉30%, 吉30%, 末吉20%）
+const int pattern_c_weights[] = {10, 10, 30, 30, 20}; // 大吉, 中吉, 小吉, 吉, 末吉
+const int pattern_c_results[] = {3, 4, 5, 6, 7};      // インデックス（1始まり）
+const int pattern_c_count = 5;
+
+// パターンD用の確率テーブル（小吉20%, 吉20%, 末吉20%, 凶20%, 大凶20%）
+const int pattern_d_weights[] = {20, 20, 20, 20, 20}; // 小吉, 吉, 末吉, 凶, 大凶
+const int pattern_d_results[] = {5, 6, 7, 8, 9};      // インデックス（1始まり）
+const int pattern_d_count = 5;
+
+omikuji_draw_result_t omikuji_result = {0};
 bool omikuji_shown = false; // おみくじ表示フラグ
 
 // フォント読み込み状態
@@ -559,14 +611,338 @@ esp_err_t initI2C()
 }
 
 /**
- * おみくじ抽選処理
+ * 重み付き抽選を行う関数
+ * @param weights 重みの配列
+ * @param results 結果の配列
+ * @param count 配列の要素数
+ * @return 選択された結果
  */
-int drawOmikuji()
+int drawWeightedRandom(const int *weights, const int *results, int count)
 {
-    uint32_t randomValue = esp_random();
-    int result = (randomValue % OMIKUJI_COUNT) + 1;
-    ESP_LOGI(TAG, "Omikuji drawn: %d (%s)", result, omikuji_results[result - 1]);
+    // 重みの合計を計算
+    int total_weight = 0;
+    for (int i = 0; i < count; i++)
+    {
+        total_weight += weights[i];
+    }
+
+    // 0からtotal_weight-1の範囲で乱数生成
+    uint32_t random_value = esp_random() % total_weight;
+
+    // 重みに基づいて選択
+    int current_weight = 0;
+    for (int i = 0; i < count; i++)
+    {
+        current_weight += weights[i];
+        if (random_value < current_weight)
+        {
+            return results[i];
+        }
+    }
+
+    // 念のため最後の要素を返す
+    return results[count - 1];
+}
+
+/**
+ * 1段階目：当たり外れ抽選
+ * @return true:あたり(5%), false:外れ(95%)
+ */
+bool checkWinLose()
+{
+    uint32_t random_value = esp_random() % 100;
+    bool is_win = (random_value < 5); // 5%で当たり
+
+    ESP_LOGI(TAG, "Win/Lose lottery: %s (roll: %ld/100)",
+             is_win ? "WIN" : "LOSE", random_value);
+
+    return is_win;
+}
+
+/**
+ * 2段階目：演出抽選
+ * @param is_win 当たりかどうか
+ * @return 演出パターン
+ */
+omikuji_pattern_t drawPattern(bool is_win)
+{
+    uint32_t random_value = esp_random() % 100;
+    omikuji_pattern_t pattern;
+
+    if (is_win)
+    {
+        // あたりの場合：99%で激アツ演出、1%で演出なし
+        if (random_value < 99)
+        {
+            pattern = PATTERN_A_GEKIATSU;
+        }
+        else
+        {
+            pattern = PATTERN_B_NORMAL_WIN;
+        }
+        ESP_LOGI(TAG, "Win pattern: %s (roll: %ld/100)",
+                 pattern_names[pattern], random_value);
+    }
+    else
+    {
+        // 外れの場合：50%でちょっとアツい演出、50%で演出なし
+        if (random_value < 50)
+        {
+            pattern = PATTERN_C_ATSUI;
+        }
+        else
+        {
+            pattern = PATTERN_D_NORMAL_LOSE;
+        }
+        ESP_LOGI(TAG, "Lose pattern: %s (roll: %ld/100)",
+                 pattern_names[pattern], random_value);
+    }
+
+    return pattern;
+}
+
+/**
+ * 3段階目：結果抽選
+ * @param pattern 演出パターン
+ * @return おみくじ結果（1-9）
+ */
+int drawResult(omikuji_pattern_t pattern)
+{
+    int result;
+
+    switch (pattern)
+    {
+    case PATTERN_A_GEKIATSU:
+        // パターンA：猫吉30%、スーパー吉70%
+        result = drawWeightedRandom(pattern_a_weights, pattern_a_results, pattern_a_count);
+        break;
+
+    case PATTERN_B_NORMAL_WIN:
+        // パターンB：猫吉100%
+        result = drawWeightedRandom(pattern_b_weights, pattern_b_results, pattern_b_count);
+        break;
+
+    case PATTERN_C_ATSUI:
+        // パターンC：大吉10%、中吉10%、小吉30%、吉30%、末吉20%
+        result = drawWeightedRandom(pattern_c_weights, pattern_c_results, pattern_c_count);
+        break;
+
+    case PATTERN_D_NORMAL_LOSE:
+        // パターンD：小吉20%、吉20%、末吉20%、凶20%、大凶20%
+        result = drawWeightedRandom(pattern_d_weights, pattern_d_results, pattern_d_count);
+        break;
+
+    default:
+        // 念のためのデフォルト値
+        result = 8; // 凶
+        break;
+    }
+
+    ESP_LOGI(TAG, "Result lottery: %s (pattern: %s)",
+             omikuji_results[result - 1], pattern_names[pattern]);
+
     return result;
+}
+
+/**
+ * アイテムインデックスを抽選する
+ * @param pattern 演出パターン
+ * @param is_win 当たりかどうか
+ * @return アイテムインデックス（0=なし, 1-3=各種アイテム）
+ */
+uint8_t drawItemIndex(omikuji_pattern_t pattern, bool is_win)
+{
+    if (pattern == PATTERN_A_GEKIATSU || pattern == PATTERN_B_NORMAL_WIN)
+    {
+        // パターンA、Bの場合：1-3のアイテムをランダム選択
+        uint32_t random_value = esp_random() % 3;
+        return (uint8_t)(random_value + 1); // 1, 2, 3のいずれか
+    }
+
+    // その他のパターンではアイテムなし
+    return 0;
+}
+
+/**
+ * サウンドインデックスを抽選する
+ * @param pattern 演出パターン
+ * @return サウンドインデックス（0=なし, 1=あたり音, 2=外れ音, 3=すごい音）
+ */
+uint8_t drawSoundIndex(omikuji_pattern_t pattern)
+{
+    switch (pattern)
+    {
+    case PATTERN_A_GEKIATSU:
+        return 1; // あたり音
+
+    case PATTERN_B_NORMAL_WIN:
+        // 10%で3（すごい音）、それ以外（90%）は1（あたり音）
+        {
+            uint32_t random_value = esp_random() % 100;
+            if (random_value < 10)
+            {
+                return 3; // すごい音
+            }
+            else
+            {
+                return 1; // あたり音
+            }
+        }
+
+    case PATTERN_C_ATSUI:
+        return 1; // あたり音
+
+    case PATTERN_D_NORMAL_LOSE:
+        return 2; // 外れ音
+
+    default:
+        return 0; // なし
+    }
+}
+
+/**
+ * エフェクトインデックスを抽選する
+ * @param pattern 演出パターン
+ * @return エフェクトインデックス（0=なし, 1-3=各種エフェクト）
+ */
+uint8_t drawEffectIndex(omikuji_pattern_t pattern)
+{
+    uint32_t random_value = esp_random() % 100;
+
+    switch (pattern)
+    {
+    case PATTERN_A_GEKIATSU:
+        // 30%で3、30%で2、40%で1
+        if (random_value < 30)
+        {
+            return 3;
+        }
+        else if (random_value < 60)
+        {
+            return 2;
+        }
+        else
+        {
+            return 1;
+        }
+
+    case PATTERN_B_NORMAL_WIN:
+        // 90%で3、10%で2
+        if (random_value < 90)
+        {
+            return 3;
+        }
+        else
+        {
+            return 2;
+        }
+
+    case PATTERN_C_ATSUI:
+        // 20%で2、20%で1、60%で0
+        if (random_value < 20)
+        {
+            return 2;
+        }
+        else if (random_value < 40)
+        {
+            return 1;
+        }
+        else
+        {
+            return 0;
+        }
+
+    case PATTERN_D_NORMAL_LOSE:
+        // 30%で1、70%で0
+        if (random_value < 30)
+        {
+            return 1;
+        }
+        else
+        {
+            return 0;
+        }
+
+    default:
+        return 0;
+    }
+}
+
+/**
+ * 猫の表情を決定する
+ * @param is_win 当たりかどうか
+ * @return 猫顔インデックス（0=通常, 1=喜び）
+ */
+uint8_t drawCatFace(bool is_win)
+{
+    uint32_t random_value = esp_random() % 100;
+    if (is_win && random_value < 40)
+    {
+        return 1; // 喜び（80%）
+    }
+    return 0; // 当たりの場合は喜び、外れは通常
+}
+
+/**
+ * 新しいおみくじ抽選処理（メイン関数）
+ * 3段階の抽選を順番に実行
+ * @return おみくじ結果構造体
+ */
+omikuji_draw_result_t drawOmikuji()
+{
+    ESP_LOGI(TAG, "=== Starting 3-stage omikuji lottery ===");
+
+    // 1段階目：当たり外れ抽選
+    bool is_win = checkWinLose();
+
+    // 2段階目：演出抽選
+    omikuji_pattern_t pattern = drawPattern(is_win);
+
+    // 3段階目：結果抽選
+    int result = drawResult(pattern);
+
+    // 4段階目：追加要素の抽選
+    uint8_t item_index = drawItemIndex(pattern, is_win);
+    uint8_t sound_index = drawSoundIndex(pattern);
+    uint8_t effect_index = drawEffectIndex(pattern);
+    uint8_t cat_face = drawCatFace(is_win);
+
+    // 結果をまとめて構造体で返す
+    omikuji_result = {
+        .result = result,
+        .pattern = pattern,
+        .is_win = is_win,
+        .pattern_name = pattern_names[pattern],
+        .item_index = item_index,
+        .sound_index = sound_index,
+        .effect_index = effect_index,
+        .cat_face = cat_face};
+
+    // ログ出力（デバッグ用）
+    ESP_LOGI(TAG, "=== Omikuji complete ===");
+    ESP_LOGI(TAG, "Result: %s | Pattern: %s | Item: %s", 
+             omikuji_results[result - 1], 
+             omikuji_result.pattern_name,
+             is_win ? "GET!" : "None");
+    ESP_LOGI(TAG, "Details - Item:%d, Sound:%d, Effect:%d, Cat:%d",
+             omikuji_result.item_index, omikuji_result.sound_index, omikuji_result.effect_index, omikuji_result.cat_face);
+
+    return omikuji_result;
+}
+
+/**
+ * アイテム取得処理用のヘルパー関数
+ * @return アイテムゲットがあるかどうか
+ */
+bool isItemGetLottery()
+{
+    // todo: 将来的にアイテム取得の確率を調整する場合はここを変更
+    // omikuji_draw_result_t result = drawOmikujiNew();
+
+    // 結果は別途必要に応じて保存
+    // TODO: グローバル変数やセーブデータに保存する処理を追加
+
+    return true;
 }
 
 /**
@@ -575,7 +951,7 @@ int drawOmikuji()
  */
 void drawOmikujiResultToCanvas()
 {
-    if (omikuji_result > 0 && omikuji_result <= OMIKUJI_COUNT)
+    if (omikuji_result.result > 0 && omikuji_result.result <= OMIKUJI_COUNT)
     {
         u_int32_t draw_start_point = new_cat_sipo1_width + new_cat_body1_width + new_cat_head1_width + cat_length - 5;
         // おみくじ表示
@@ -593,7 +969,7 @@ void drawOmikujiResultToCanvas()
         canvas.setTextSize(1);
 
         // 結果をキャンバス中央に描画
-        const char *result_text = omikuji_results[omikuji_result - 1];
+        const char *result_text = omikuji_results[omikuji_result.result - 1];
         canvas.drawString(result_text, draw_start_point + (kuji_width / 2), 35 + (kuji_height / 2));
         canvas.setTextSize(1);
         ESP_LOGD(TAG, "Omikuji result drawn to canvas: %s", result_text);
@@ -613,7 +989,7 @@ void drawSwitchStateToCanvas()
         // MCP23008が使用できない場合は "-----" 表示
         canvas.setTextColor(TFT_RED);
         canvas.setTextDatum(TL_DATUM);
-        canvas.drawString("-err-", 230, 5);
+        canvas.drawString("swerr", 230, 5);
         return;
     }
 
@@ -636,11 +1012,11 @@ void drawSwitchStateToCanvas()
         }
         switch_text[5] = '\0'; // 文字列終端
 
-        // キャンバス左上にバイナリ表示
+        /* キャンバス左上にバイナリ表示debug
         canvas.setTextColor(TFT_YELLOW);
         canvas.setTextDatum(TL_DATUM);
         canvas.drawString(switch_text, 240, 5);
-
+        //*/
         // ESP_LOGI(TAG, "Switch binary display: %s (raw: 0x%02X)", switch_text, lever_switch_state);
     }
     else
@@ -648,7 +1024,7 @@ void drawSwitchStateToCanvas()
         // エラー時は "ERROR" 表示
         canvas.setTextColor(TFT_RED);
         canvas.setTextDatum(TL_DATUM);
-        canvas.drawString("ERROR", 5, 5);
+        canvas.drawString("ERROR", 240, 5);
 
         ESP_LOGE(TAG, "Failed to read switch state: %s", esp_err_to_name(err));
     }
@@ -747,7 +1123,14 @@ void drawCatToCanvas(int x, int y)
     }
     else
     {
-        catHeadImage = PaletteImageData(new_cat_head2_data, new_cat_head2_width, new_cat_head2_height, &catPalette);
+        if (omikuji_result.cat_face == 0)
+        {
+            catHeadImage = PaletteImageData(new_cat_head2_data, new_cat_head2_width, new_cat_head2_height, &catPalette);
+        }
+        else
+        {
+            catHeadImage = PaletteImageData(new_cat_head3_data, new_cat_head3_width, new_cat_head3_height, &catPalette);
+        }
     }
 
     // 左から順番に描画（しっぽ、体、頭）
@@ -783,7 +1166,7 @@ void updateCatLength()
     {
 
         // ボタンが押された瞬間におみくじ抽選
-        if (press_lever && omikuji_result == 0)
+        if (press_lever && omikuji_result.result == 0)
         {
             omikuji_result = drawOmikuji();
         }
@@ -805,6 +1188,34 @@ void updateCatLength()
         {
             cat_length = saidai_cat_length;
             omikuji_shown = true; // 最大長になったらおみくじ表示
+
+            if (omikuji_result.effect_index != 0)
+            {
+                // error:ログは表示されるが、アイコンが表示されない
+                ESP_LOGI(TAG, "Effect index: %d", omikuji_result.effect_index);
+                //int effect_x = canvas.width() - miniicon_000_width;
+                //int effect_y = (canvas.height() / 2) - miniicon_000_height;
+                int effect_x = 0;
+                int effect_y = 0;
+                // エフェクト表示
+                RetroColorPalette effectPalette;
+                effectPalette.initClassicRetroColors(); // 基本パレット
+                if (omikuji_result.effect_index == 1)
+                {
+                    PaletteImageData effectImage(miniicon_000_data, miniicon_000_width, miniicon_000_height, &effectPalette);
+                    renderer->drawToCanvas(effectImage, effect_x, effect_y, true);
+                }
+                else if (omikuji_result.effect_index == 2)
+                {
+                    PaletteImageData effectImage(miniicon_001_data, miniicon_001_width, miniicon_001_height, &effectPalette);
+                    renderer->drawToCanvas(effectImage, effect_x, effect_y, true);
+                }
+                else if (omikuji_result.effect_index == 3)
+                {
+                    PaletteImageData effectImage(miniicon_002_data, miniicon_002_width, miniicon_002_height, &effectPalette);
+                    renderer->drawToCanvas(effectImage, effect_x, effect_y, true);
+                }
+            }
         }
     }
     else
@@ -823,7 +1234,7 @@ void updateCatLength()
         {
             cat_length = 0;
             // 猫が完全に縮んだ時にリセット
-            omikuji_result = 0;
+            omikuji_result = {0};
             omikuji_shown = false;
 
             // スコア確定

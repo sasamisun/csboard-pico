@@ -393,7 +393,7 @@ void GameMenu::drawMenuIcons()
 
             if (count > 0)
             {
-                drawItemCount(x_pos, y_pos + ICON_SIZE / 2 + 10, count);
+                drawItemCount(x_pos, y_pos + ICON_SIZE / 2 + 3, count);
             }
         }
     }

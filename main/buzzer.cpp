@@ -110,6 +110,38 @@ static const buzzer_note_t sound_patterns[][10] = {
         {NOTE_A5, 100},     // レ
         {NOTE_A6, 100},     // ミ
         {NOTE_SILENT, 0}    // 終了マーカー
+    },
+
+    // BUZZER_SOUND_OMIKUJI_NO - おみくじ何もない
+    {
+        {NOTE_C5, 100},     // 高いド
+        {NOTE_SILENT, 10},     // 無音
+        {NOTE_A4, 150},     // 高いソ
+        {NOTE_SILENT, 0}    // 終了マーカー
+    },
+    // BUZZER_SOUND_OMIKUJI_HAZURE - おみくじハズレ
+    {
+        {NOTE_C5, 100},     // 高いド
+        {NOTE_A4, 100},     // 高いソ
+        {NOTE_F4, 100},
+        {NOTE_SILENT, 0}    // 終了マーカー
+    },
+    // BUZZER_SOUND_OMIKUJI_ARATI - おみくじあたり
+    {
+        {NOTE_C5, 100},     // 高いド
+        {NOTE_E5, 100},     // 高いミ
+        {NOTE_G5, 500},
+        {NOTE_SILENT, 0}    // 終了マーカー
+    },
+    // BUZZER_SOUND_OMIKUJI_SPECIAL - おみくじスペシャル
+    {
+        {NOTE_C5, 300},     // 高いド
+        {NOTE_D5, 300},     // 高いミ
+        {NOTE_E5, 300},
+        {NOTE_D5, 300},
+        {NOTE_C5, 300},
+        {NOTE_D5, 1000},
+        {NOTE_SILENT, 0}    // 終了マーカー
     }
 };
 

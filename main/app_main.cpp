@@ -64,7 +64,7 @@ static PaletteImageRenderer *renderer = nullptr; // パレット画像レンダ�
 const int BUTTON_PIN = 39;     // M5StampPicoオンボードボタン
 const int CAT_WIDTH = 96;      // 猫画像の幅
 const int CAT_HEIGHT = 48;     // 猫画像の高さ
-const int MOVE_SPEED = 50;      // 移動速度（ピクセル/フレーム）todo:debug power up
+uint8_t move_speed = 2;        // 移動速度（ピクセル/フレーム）
 const int FRAME_DELAY_MS = 50; // フレーム間隔（20FPS）
 
 // MCP23008 I2C設定
@@ -91,6 +91,11 @@ bool cat_sippo_toggle = false;       // しっぽアニメーション用フラ�
 uint8_t lever_switch_state = 0;      // レバースイッチ状態
 uint8_t last_lever_switch_state = 0; // 前回のレバースイッチ状態
 bool last_press_lever = false;       // 前回のレバースイッチ状態
+// item_counts_t item_counts = {0, 0, 0}; // アイテム所持数
+bool omiku_sound_played = false; // おみくじ音再生フラグ
+// bool sound_enabled = false;            // サウンド有効フラグ
+uint8_t score_bonus_a = 0; // スコアボーナスA
+uint8_t score_bonus_b = 0; // スコアボーナスB
 
 int saidai_cat_length = 0; // 猫の最大体長
 
@@ -168,245 +173,17 @@ bool omikuji_shown = false; // おみくじ表示フラグ
 // フォント読み込み状態
 bool font_loaded = false; // フォントが読み込まれたかどうか
 
+unsigned long omikuji_hide_timer = 0;                // おみくじ非表示タイマー
+bool omikuji_delay_hiding = false;                   // 遅延非表示モード中かどうか
+const unsigned long OMIKUJI_DISPLAY_DELAY_MS = 1000; // 1秒間表示継続
+uint16_t omikuji_animation_frame = 0;                // 宝箱オープンアニメーションフレーム
+
 /**
  * メニュー背景保存用のグローバル関数宣言
  * game_menu.cppで実装される関数の宣言
  */
 esp_err_t saveMenuBackground();
 bool hasMenuBackgroundSaved();
-
-/**
- * @file buzzer_debug.hpp
- * @brief ブザー診断用デバッグコード
- * @author 猫エンジニア
- * @date 2025年9月21日
- *
- * ブザーが音を出さない問題を診断するためのコード
- * app_main.cppに一時的に追加して原因を特定する
- */
-
-#pragma once
-
-#include "esp_log.h"
-#include "driver/ledc.h"
-#include "driver/gpio.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-
-/**
- * ブザー診断テスト
- * 段階的にテストして問題箇所を特定する
- */
-void buzzer_diagnostic_test()
-{
-    const char *TAG = "BUZZER_DEBUG";
-    ESP_LOGI(TAG, "=== ブザー診断テスト開始 ===");
-
-    // テスト1: ピン番号の確認
-    ESP_LOGI(TAG, "テスト1: ピン設定確認");
-    const int TEST_PIN = 25; // M5StampPicoのG25
-    ESP_LOGI(TAG, "使用ピン: GPIO%d", TEST_PIN);
-
-    // ピンをGPIO出力として設定
-    gpio_config_t io_conf = {};
-    io_conf.intr_type = GPIO_INTR_DISABLE;
-    io_conf.mode = GPIO_MODE_OUTPUT;
-    io_conf.pin_bit_mask = (1ULL << TEST_PIN);
-    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    io_conf.pull_up_en = GPIO_PULLUP_DISABLE;
-
-    esp_err_t err = gpio_config(&io_conf);
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "GPIO設定失敗: %s", esp_err_to_name(err));
-        return;
-    }
-
-    // テスト2: GPIO直接制御テスト（クリック音）
-    ESP_LOGI(TAG, "テスト2: GPIO直接制御（3回クリック）");
-    for (int i = 0; i < 3; i++)
-    {
-        gpio_set_level((gpio_num_t)TEST_PIN, 1);
-        vTaskDelay(pdMS_TO_TICKS(100));
-        gpio_set_level((gpio_num_t)TEST_PIN, 0);
-        vTaskDelay(pdMS_TO_TICKS(100));
-        ESP_LOGI(TAG, "クリック %d/3", i + 1);
-    }
-
-    // テスト3: PWM設定詳細チェック
-    ESP_LOGI(TAG, "テスト3: PWM設定の詳細確認");
-
-    // 既存のPWMタイマーを削除（競合回避）
-    ledc_timer_rst(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0);
-    ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
-
-    // PWMタイマー設定
-    ledc_timer_config_t timer_config = {};
-    timer_config.speed_mode = LEDC_LOW_SPEED_MODE;
-    timer_config.timer_num = LEDC_TIMER_0;
-    timer_config.duty_resolution = LEDC_TIMER_10_BIT; // より高い解像度
-    timer_config.freq_hz = 1000;                      // 1kHz
-    timer_config.clk_cfg = LEDC_AUTO_CLK;
-
-    err = ledc_timer_config(&timer_config);
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "PWMタイマー設定失敗: %s", esp_err_to_name(err));
-        return;
-    }
-    ESP_LOGI(TAG, "PWMタイマー設定成功");
-
-    // PWMチャンネル設定
-    ledc_channel_config_t channel_config = {};
-    channel_config.speed_mode = LEDC_LOW_SPEED_MODE;
-    channel_config.channel = LEDC_CHANNEL_0;
-    channel_config.timer_sel = LEDC_TIMER_0;
-    channel_config.intr_type = LEDC_INTR_DISABLE;
-    channel_config.gpio_num = TEST_PIN;
-    channel_config.duty = 512; // 50% duty (0-1023)
-    channel_config.hpoint = 0;
-
-    err = ledc_channel_config(&channel_config);
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "PWMチャンネル設定失敗: %s", esp_err_to_name(err));
-        return;
-    }
-    ESP_LOGI(TAG, "PWMチャンネル設定成功");
-
-    // テスト4: 異なる周波数でのPWMテスト
-    ESP_LOGI(TAG, "テスト4: PWM周波数テスト");
-
-    uint32_t test_frequencies[] = {100, 440, 1000, 2000, 4000};
-    int num_tests = sizeof(test_frequencies) / sizeof(test_frequencies[0]);
-
-    for (int i = 0; i < num_tests; i++)
-    {
-        uint32_t freq = test_frequencies[i];
-        ESP_LOGI(TAG, "周波数テスト: %ld Hz", freq);
-
-        // 周波数設定
-        err = ledc_set_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0, freq);
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "周波数%ld Hz設定失敗: %s", freq, esp_err_to_name(err));
-            continue;
-        }
-
-        // PWM開始
-        err = ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 512);
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "PWM duty設定失敗: %s", esp_err_to_name(err));
-            continue;
-        }
-
-        err = ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "PWM duty更新失敗: %s", esp_err_to_name(err));
-            continue;
-        }
-
-        ESP_LOGI(TAG, "%ld Hz で 1秒間PWM出力中...", freq);
-        vTaskDelay(pdMS_TO_TICKS(1000));
-
-        // PWM停止
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-
-        vTaskDelay(pdMS_TO_TICKS(500)); // 間隔
-    }
-
-    // テスト5: 異なるピンでのテスト（ピン問題の確認）
-    ESP_LOGI(TAG, "テスト5: 他のピンでのテスト");
-    int alternative_pins[] = {26, 27, 14, 12}; // M5StampPicoで使用可能そうなピン
-    int num_alt_pins = sizeof(alternative_pins) / sizeof(alternative_pins[0]);
-
-    for (int i = 0; i < num_alt_pins; i++)
-    {
-        int alt_pin = alternative_pins[i];
-        ESP_LOGI(TAG, "代替ピンテスト: GPIO%d", alt_pin);
-
-        // ピン変更
-        channel_config.gpio_num = alt_pin;
-        err = ledc_channel_config(&channel_config);
-        if (err != ESP_OK)
-        {
-            ESP_LOGE(TAG, "GPIO%d設定失敗: %s", alt_pin, esp_err_to_name(err));
-            continue;
-        }
-
-        // 440Hz で短時間テスト
-        ledc_set_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0, 440);
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 512);
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-
-        ESP_LOGI(TAG, "GPIO%d で 440Hz 0.5秒出力", alt_pin);
-        vTaskDelay(pdMS_TO_TICKS(500));
-
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-
-        vTaskDelay(pdMS_TO_TICKS(300));
-    }
-
-    // PWM停止
-    ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
-
-    ESP_LOGI(TAG, "=== ブザー診断テスト完了 ===");
-    ESP_LOGI(TAG, "音が聞こえた場合：");
-    ESP_LOGI(TAG, "  - どのテストで音が出たか確認してください");
-    ESP_LOGI(TAG, "  - 特定のピンでのみ音が出る場合、配線を確認");
-    ESP_LOGI(TAG, "音が全く聞こえない場合：");
-    ESP_LOGI(TAG, "  - ブザーの配線を確認（VCC, GND, 信号線）");
-    ESP_LOGI(TAG, "  - ブザーの種類を確認（アクティブ/パッシブ）");
-    ESP_LOGI(TAG, "  - 電源電圧を確認（3.3V/5V）");
-}
-
-/**
- * 簡易ブザーテスト（app_main.cppで呼び出し用）
- * initGame()の後に一度だけ呼び出してください
- */
-void test_buzzer_simple()
-{
-    const char *TAG = "BUZZER_TEST";
-    ESP_LOGI(TAG, "簡易ブザーテスト開始...");
-
-    // 直接PWMでテスト
-    const int pin = 25;
-
-    ledc_timer_config_t timer_conf = {};
-    timer_conf.speed_mode = LEDC_LOW_SPEED_MODE;
-    timer_conf.timer_num = LEDC_TIMER_1; // タイマー1を使用（競合回避）
-    timer_conf.duty_resolution = LEDC_TIMER_8_BIT;
-    timer_conf.freq_hz = 1000;
-    timer_conf.clk_cfg = LEDC_AUTO_CLK;
-    ledc_timer_config(&timer_conf);
-
-    ledc_channel_config_t ch_conf = {};
-    ch_conf.speed_mode = LEDC_LOW_SPEED_MODE;
-    ch_conf.channel = LEDC_CHANNEL_1; // チャンネル1を使用（競合回避）
-    ch_conf.timer_sel = LEDC_TIMER_1;
-    ch_conf.intr_type = LEDC_INTR_DISABLE;
-    ch_conf.gpio_num = pin;
-    ch_conf.duty = 128;
-    ch_conf.hpoint = 0;
-    ledc_channel_config(&ch_conf);
-
-    // 440Hz（ラの音）を2秒間
-    ESP_LOGI(TAG, "440Hz ブザーテスト（2秒間）...");
-    ledc_set_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_1, 440);
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, 128);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
-
-    vTaskDelay(pdMS_TO_TICKS(2000));
-
-    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, 0);
-    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
-
-    ESP_LOGI(TAG, "ブザーテスト完了");
-}
 
 /**
  *
@@ -920,29 +697,14 @@ omikuji_draw_result_t drawOmikuji()
 
     // ログ出力（デバッグ用）
     ESP_LOGI(TAG, "=== Omikuji complete ===");
-    ESP_LOGI(TAG, "Result: %s | Pattern: %s | Item: %s", 
-             omikuji_results[result - 1], 
+    ESP_LOGI(TAG, "Result: %s | Pattern: %s | Item: %s",
+             omikuji_results[result - 1],
              omikuji_result.pattern_name,
              is_win ? "GET!" : "None");
     ESP_LOGI(TAG, "Details - Item:%d, Sound:%d, Effect:%d, Cat:%d",
              omikuji_result.item_index, omikuji_result.sound_index, omikuji_result.effect_index, omikuji_result.cat_face);
 
     return omikuji_result;
-}
-
-/**
- * アイテム取得処理用のヘルパー関数
- * @return アイテムゲットがあるかどうか
- */
-bool isItemGetLottery()
-{
-    // todo: 将来的にアイテム取得の確率を調整する場合はここを変更
-    // omikuji_draw_result_t result = drawOmikujiNew();
-
-    // 結果は別途必要に応じて保存
-    // TODO: グローバル変数やセーブデータに保存する処理を追加
-
-    return true;
 }
 
 /**
@@ -973,6 +735,36 @@ void drawOmikujiResultToCanvas()
         canvas.drawString(result_text, draw_start_point + (kuji_width / 2), 35 + (kuji_height / 2));
         canvas.setTextSize(1);
         ESP_LOGD(TAG, "Omikuji result drawn to canvas: %s", result_text);
+
+        // アイテムがある場合はアイテムも表示
+        // omikuji_result.item_index = 1; // デバッグ用に強制的にアイテムありに設定
+        if (omikuji_result.item_index > 0)
+        {
+            RetroColorPalette itemPalette;
+            itemPalette.initBasicColors();                                                          // 基本パレット
+            PaletteImageData itemImg(icon_006_data, icon_006_width, icon_006_height, &itemPalette); // 閉じた宝箱
+            if (omikuji_delay_hiding)
+            {
+                itemImg = PaletteImageData(icon_005_data, icon_005_width, icon_005_height, &itemPalette); // 開いた宝箱
+            }
+            renderer->drawToCanvas(itemImg, draw_start_point + kuji_width, 35, true);
+            if (omikuji_delay_hiding)
+            {
+                switch (omikuji_result.item_index)
+                {
+                case 1:
+                    itemImg = PaletteImageData(icon_004_data, icon_004_width, icon_004_height, &itemPalette);
+                    break;
+                case 2:
+                    itemImg = PaletteImageData(icon_003_data, icon_003_width, icon_003_height, &itemPalette);
+                    break;
+                default:
+                    itemImg = PaletteImageData(icon_002_data, icon_002_width, icon_002_height, &itemPalette);
+                    break;
+                }
+                renderer->drawToCanvas(itemImg, draw_start_point + kuji_width, 20 - omikuji_animation_frame, true);
+            }
+        }
     }
 }
 
@@ -1152,6 +944,20 @@ void drawCatToCanvas(int x, int y)
     renderer->drawToCanvas(catHeadImage, cat_length_headless, y, true);
 }
 
+// ゲーム状態をリセットする関数を追加
+void resetGameState()
+{
+    // おみくじ関連をリセット
+    if (cat_length <= 0)
+    {
+        omikuji_result = {0};
+        omikuji_shown = false;
+        omikuji_animation_frame = 0;
+    }
+
+    ESP_LOGI(TAG, "Game state reset completed");
+}
+
 /**
  * 猫の伸び具合を更新
  * ボタン状態に応じて移動するにゃ
@@ -1169,6 +975,11 @@ void updateCatLength()
         if (press_lever && omikuji_result.result == 0)
         {
             omikuji_result = drawOmikuji();
+            if (omikuji_shown)
+            {
+                resetGameState();
+                omikuji_shown = false;
+            }
         }
 
         last_press_lever = press_lever;
@@ -1177,8 +988,9 @@ void updateCatLength()
     // 移動処理
     if (press_lever)
     {
+        int old_cat_length = cat_length;
         // ボタンが押されている間：右に移動
-        cat_length += MOVE_SPEED;
+        cat_length += move_speed;
         if (cat_length > max_cat_length)
         {
             max_cat_length = cat_length;
@@ -1186,36 +998,27 @@ void updateCatLength()
 
         if (cat_length > saidai_cat_length)
         {
+            if (!omiku_sound_played)
+            {
+                switch (omikuji_result.sound_index)
+                {
+                case 1:
+                    buzzer_play_sound(BUZZER_SOUND_OMIKUJI_HAZURE);
+                    break;
+                case 2:
+                    buzzer_play_sound(BUZZER_SOUND_OMIKUJI_ARATI);
+                    break;
+                case 3:
+                    buzzer_play_sound(BUZZER_SOUND_OMIKUJI_SPECIAL);
+                    break;
+                default:
+                    buzzer_play_sound(BUZZER_SOUND_OMIKUJI_NO);
+                    break;
+                }
+                omiku_sound_played = true;
+            }
             cat_length = saidai_cat_length;
             omikuji_shown = true; // 最大長になったらおみくじ表示
-
-            if (omikuji_result.effect_index != 0)
-            {
-                // error:ログは表示されるが、アイコンが表示されない
-                ESP_LOGI(TAG, "Effect index: %d", omikuji_result.effect_index);
-                //int effect_x = canvas.width() - miniicon_000_width;
-                //int effect_y = (canvas.height() / 2) - miniicon_000_height;
-                int effect_x = 0;
-                int effect_y = 0;
-                // エフェクト表示
-                RetroColorPalette effectPalette;
-                effectPalette.initClassicRetroColors(); // 基本パレット
-                if (omikuji_result.effect_index == 1)
-                {
-                    PaletteImageData effectImage(miniicon_000_data, miniicon_000_width, miniicon_000_height, &effectPalette);
-                    renderer->drawToCanvas(effectImage, effect_x, effect_y, true);
-                }
-                else if (omikuji_result.effect_index == 2)
-                {
-                    PaletteImageData effectImage(miniicon_001_data, miniicon_001_width, miniicon_001_height, &effectPalette);
-                    renderer->drawToCanvas(effectImage, effect_x, effect_y, true);
-                }
-                else if (omikuji_result.effect_index == 3)
-                {
-                    PaletteImageData effectImage(miniicon_002_data, miniicon_002_width, miniicon_002_height, &effectPalette);
-                    renderer->drawToCanvas(effectImage, effect_x, effect_y, true);
-                }
-            }
         }
     }
     else
@@ -1227,25 +1030,39 @@ void updateCatLength()
             cat_length_was_aru = true;
         }
         // ボタンが離されている間：左に移動
-        cat_length -= MOVE_SPEED;
+        cat_length -= 10;
 
         // 左端制限（x=0より左に行かない）
         if (cat_length <= 0)
         {
             cat_length = 0;
-            // 猫が完全に縮んだ時にリセット
-            omikuji_result = {0};
-            omikuji_shown = false;
 
-            // スコア確定
+            omikuji_animation_frame++;
+            // 猫が完全に縮んだ時の処理
             if (cat_length_was_aru)
             {
+                omiku_sound_played = false;
+                omikuji_animation_frame = 0;
+                // おみくじが表示されている場合は遅延非表示モードに移行
+                if (omikuji_shown)
+                {
+                    omikuji_delay_hiding = true;
+                    omikuji_hide_timer = xTaskGetTickCount() * portTICK_PERIOD_MS;
+                    ESP_LOGI(TAG, "Starting omikuji display delay timer");
+                }
+                else
+                {
+                    // おみくじが表示されていない場合は即座にリセット
+                    resetGameState();
+                }
+
+                // スコア確定
                 score += max_cat_length;
                 ESP_LOGI(TAG, "Score updated: %llu", score);
                 max_cat_length = 0;
 
                 // NVSにスコア保存
-                esp_err_t ret = nvs_set_i64(nvsHandle, "score", score);
+                esp_err_t ret = nvs_set_u64(nvsHandle, "score", score);
                 if (ret != ESP_OK)
                 {
                     ESP_LOGE(TAG, "Error saving score to NVS: %s", esp_err_to_name(ret));
@@ -1255,7 +1072,65 @@ void updateCatLength()
                     nvs_commit(nvsHandle);
                     ESP_LOGI(TAG, "Score saved to NVS");
                 }
+                /*
+                // アイテム数保存
+                char *key = "";
+                uint8_t item_count = 0;
+                switch (omikuji_result.item_index)
+                {
+                case 1:
+                    key = "item1";
+                    item_counts.speed_up_count++;
+                    item_count = item_counts.speed_up_count;
+                    break;
+                case 2:
+                    key = "item2";
+                    item_counts.speed_down_count++;
+                    item_count = item_counts.speed_down_count;
+                    break;
+                case 3:
+                    key = "item3";
+                    item_counts.bonus_count++;
+                    item_count = item_counts.bonus_count;
+                    break;
+                }
+                ret = nvs_set_u8(nvsHandle, key, item_count);
+                if (ret != ESP_OK)
+                {
+                    ESP_LOGE(TAG, "Error saving item count to NVS: %s", esp_err_to_name(ret));
+                }
+                else
+                {
+                    nvs_commit(nvsHandle);
+                    ESP_LOGI(TAG, "Item count saved to NVS");
+                }
+                */
+               switch (omikuji_result.item_index)
+                {
+                    case MENU_SPEED_UP:
+                        addGameItem(MENU_SPEED_UP, 1);
+                        break;
+                    case MENU_SPEED_DOWN:
+                        addGameItem(MENU_SPEED_DOWN, 1);
+                        break;
+                    case MENU_BONUS_ITEM:
+                        addGameItem(MENU_BONUS_ITEM, 1);
+                        break;
+                }
             }
+        }
+    }
+    // 遅延非表示タイマーの処理
+    if (omikuji_delay_hiding)
+    {
+        unsigned long current_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        if (current_time - omikuji_hide_timer >= OMIKUJI_DISPLAY_DELAY_MS)
+        {
+            // 1秒経過したのでおみくじを非表示にしてリセット
+            ESP_LOGI(TAG, "Omikuji display delay timer expired, hiding results");
+            resetGameState();
+            omikuji_delay_hiding = false;
+            omikuji_hide_timer = 0;
         }
     }
 }
@@ -1303,6 +1178,37 @@ void drawGameScreen()
     if (omikuji_shown)
     {
         drawOmikujiResultToCanvas();
+    }
+
+    // エフェクト表示
+    if (cat_length >= saidai_cat_length)
+    {
+
+        if (omikuji_result.effect_index != 0)
+        {
+            // error:ログは表示されるが、アイコンが表示されない
+            ESP_LOGI(TAG, "Effect index: %d", omikuji_result.effect_index);
+            int effect_x = canvas.width() - miniicon_000_width;
+            int effect_y = (canvas.height() / 2) - miniicon_000_height;
+            // エフェクト表示
+            RetroColorPalette effectPalette;
+            effectPalette.initClassicRetroColors(); // 基本パレット
+            if (omikuji_result.effect_index == 1)
+            {
+                PaletteImageData effectImage(miniicon_000_data, miniicon_000_width, miniicon_000_height, &effectPalette);
+                renderer->drawToCanvas(effectImage, effect_x, effect_y, true);
+            }
+            else if (omikuji_result.effect_index == 2)
+            {
+                PaletteImageData effectImage(miniicon_001_data, miniicon_001_width, miniicon_001_height, &effectPalette);
+                renderer->drawToCanvas(effectImage, effect_x, effect_y, true);
+            }
+            else if (omikuji_result.effect_index == 3)
+            {
+                PaletteImageData effectImage(miniicon_002_data, miniicon_002_width, miniicon_002_height, &effectPalette);
+                renderer->drawToCanvas(effectImage, effect_x, effect_y, true);
+            }
+        }
     }
 
     // 最後にキャンバス全体をLCDに転送（一度だけ！）
@@ -1402,10 +1308,8 @@ void initGame()
     {
         ESP_LOGI(TAG, "Buzzer initialized successfully");
         // 起動音を再生
-        // buzzer_play_sound(BUZZER_SOUND_STARTUP);
+        buzzer_play_sound(BUZZER_SOUND_STARTUP);
     }
-    // ブザーテスト（必要に応じてコメントアウト）
-    // buzzer_play_sound(BUZZER_SOUND_STARTUP);
 
     // NVS初期化
     nvs_flash_init();
@@ -1425,9 +1329,72 @@ void initGame()
     }
     else
     {
+        /*
+                // アイテム数読み出し
+                uint8_t item_count = 0;
+                ret = nvs_get_u8(nvsHandle, "speed_up", &item_count);
+                if (ret == ESP_OK)
+                {
+                    item_counts.speed_up_count = item_count;
+                }
+                else
+                {
+                    item_counts.speed_up_count = 0;
+                }
+                ret = nvs_get_u8(nvsHandle, "speed_down", &item_count);
+                if (ret == ESP_OK)
+                {
+                    item_counts.speed_down_count = item_count;
+                }
+                else
+                {
+                    item_counts.speed_down_count = 0;
+                }
+                ret = nvs_get_u8(nvsHandle, "bonus", &item_count);
+                if (ret == ESP_OK)
+                {
+                    item_counts.bonus_count = item_count;
+                }
+                else
+                {
+                    item_counts.bonus_count = 0;
+                }
+
+                // サウンド設定読み出し
+                uint8_t get_sound_setting = 0;
+                //sound_enabled;
+                ret = nvs_get_u8(nvsHandle, "sound_enabled", &get_sound_setting);
+                if(ret == ESP_OK) {
+                    sound_enabled = (get_sound_setting != 0);
+                }
+                buzzer_set_enabled(sound_enabled);
+         */
+        // スコアボーナス読み出し
+        uint8_t get_score_bonus = 0;
+        ret = nvs_get_u8(nvsHandle, "score_bonus_a", &get_score_bonus);
+        if (ret == ESP_OK)
+        {
+            score_bonus_a = get_score_bonus;
+        }
+
+        // スコアボーナスB読み出し
+        ret = nvs_get_u8(nvsHandle, "score_bonus_b", &get_score_bonus);
+        if (ret == ESP_OK)
+        {
+            score_bonus_b = get_score_bonus;
+        }
+
+        // スピード読み出し
+        uint8_t get_speed = move_speed;
+        ret = nvs_get_u8(nvsHandle, "move_speed", &get_speed);
+        if (ret == ESP_OK)
+        {
+            move_speed = get_speed;
+        }
+
         // スコア読み出し
-        int64_t saved_score = 0;
-        ret = nvs_get_i64(nvsHandle, "score", &saved_score);
+        u_int64_t saved_score = 0;
+        ret = nvs_get_u64(nvsHandle, "score", &saved_score);
         if (ret == ESP_OK)
         {
             score = saved_score;
@@ -1496,6 +1463,7 @@ void initGame()
     {
         ESP_LOGI(TAG, "Menu system initialized successfully");
     }
+    buzzer_set_enabled(getGameSoundEnabled());
 }
 
 /**
@@ -1522,6 +1490,7 @@ void gameLoop()
 
                 // === 【重要】メニュー起動前に現在の画面を背景として保存 ===
                 esp_err_t save_result = saveMenuBackground();
+                buzzer_play_sound(BUZZER_SOUND_DECISION);
                 if (save_result != ESP_OK)
                 {
                     ESP_LOGI(TAG, "Failed to save menu background: %s", esp_err_to_name(save_result));
@@ -1532,30 +1501,50 @@ void gameLoop()
                     ESP_LOGI(TAG, "Menu background saved successfully");
                 }
 
+                // メニュー実行
                 menu_result_t menu_result = executeGameMenu();
-
                 // メニュー結果の処理
+                esp_err_t ret;
                 switch (menu_result)
                 {
+                case MENU_RESULT_SOUND_ON:
+                case MENU_RESULT_SOUND_OFF:
+                    buzzer_set_enabled(getGameSoundEnabled());
+                    break;
                 case MENU_RESULT_USE_SPEED_UP:
-                    // スピードアップ効果を適用
-                    // 例：移動速度を一時的に増加
-                    ESP_LOGI(TAG, "Speed up effect activated!");
+                    move_speed++;
+                    ret = nvs_set_u8(nvsHandle, "move_speed", move_speed);
+                    if (ret == ESP_OK)
+                    {
+                        nvs_commit(nvsHandle);
+                    }
+                    buzzer_play_sound(BUZZER_SOUND_SCORE_GET);
                     break;
 
                 case MENU_RESULT_USE_SPEED_DOWN:
-                    // スピードダウン効果を適用
-                    ESP_LOGI(TAG, "Speed down effect activated!");
+                    move_speed--;
+                    ret = nvs_set_u8(nvsHandle, "move_speed", move_speed);
+                    if (ret == ESP_OK)
+                    {
+                        nvs_commit(nvsHandle);
+                    }
+                    buzzer_play_sound(BUZZER_SOUND_SCORE_GET);
                     break;
 
                 case MENU_RESULT_USE_BONUS:
-                    // ボーナス効果を適用（例：スコア倍増）
-                    score += 1000; // ボーナスポイント
-                    ESP_LOGI(TAG, "Bonus effect activated! Score: %llu", score);
+                    score_bonus_a++;
+                    score_bonus_b++;
+                    ret = nvs_set_u8(nvsHandle, "score_bonus_a", score_bonus_a);
+                    if (ret == ESP_OK)
+                    {
+                        nvs_commit(nvsHandle);
+                    }
+                    buzzer_play_sound(BUZZER_SOUND_SCORE_GET);
                     break;
 
                 default:
                     ESP_LOGI(TAG, "Menu closed without action");
+                    buzzer_play_sound(BUZZER_SOUND_CANCEL);
                     break;
                 }
 
@@ -1573,6 +1562,7 @@ void gameLoop()
             lastUpdateTime = currentTime;
 
             // デバッグ情報（1秒に1回）
+            /*
             static unsigned long lastDebugTime = 0;
             if (currentTime - lastDebugTime >= 1000)
             {
@@ -1581,6 +1571,7 @@ void gameLoop()
                 //         catX, catY, readButton() ? "PRESSED" : "RELEASED");
                 lastDebugTime = currentTime;
             }
+                */
         }
 
         // CPU負荷軽減のため短時間待機

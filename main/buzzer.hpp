@@ -32,7 +32,11 @@ typedef enum {
     BUZZER_SOUND_DECISION,          // 決定音
     BUZZER_SOUND_CANCEL,            // キャンセル音
     BUZZER_SOUND_STARTUP,           // 起動音
-    BUZZER_SOUND_COUNT              // 効果音の総数
+    BUZZER_SOUND_OMIKUJI_NO,
+    BUZZER_SOUND_OMIKUJI_HAZURE,
+    BUZZER_SOUND_OMIKUJI_ARATI,
+    BUZZER_SOUND_OMIKUJI_SPECIAL,
+    BUZZER_SOUND_COUNT // 効果音の総数
 } buzzer_sound_t;
 
 // 音階定義（周波数 Hz）
